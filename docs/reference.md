@@ -27,7 +27,8 @@ hotcell run "<cmd>" [--image I] [--keep] [--env K=V,…] [--sleep-after MS] [--e
                [--memory MB] [--cpus N] [--pids N] [--repo URL] [--ref BRANCH] [--setup "cmd"]
 hotcell create [-i] [-n N] [--name HANDLE] [--image I] [--driver container|firecracker|applevz] [--env K=V,…] [--egress]
                [--egress-spend-cap USD] [--memory MB] [--cpus N] [--pids N] [--repo URL] [--ref BRANCH] [--branch NAME] [--setup "cmd"]
-               [--opencode]                  # prints id; --opencode preinstalls the OpenCode agent (implies --egress)
+               [--autopilot] [--opencode]     # prints id; --autopilot installs autopilot-ai (command: autopilot), implies --egress
+                                             # --opencode remains a supported alternative; both need OpenRouter + Node/npm
                                              # shows live per-sandbox progress; Ctrl-C leaves provisioning running (see hotcell ls)
 hotcell exec <id> "<cmd>" [--session SID] [--cwd DIR] [--env K=V,…]
 hotcell ls | stats <id> | stop <id> | start <id> | rm <id> | capacity | info
