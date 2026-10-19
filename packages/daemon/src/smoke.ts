@@ -175,10 +175,20 @@ async function main(): Promise<number> {
       body: JSON.stringify({ path: "/workspace" }),
     });
     if (!listRes.ok) throw new Error(`list failed: ${listRes.status}`);
-    const { entries } = (await listRes.json()) as { entries: { name: string; isDirectory: boolean }[] };
+    const { entries } = (await listRes.json()) as {
+      entries: { name: string; path: string; isDirectory: boolean; modifiedAt: string }[];
+    };
     const names = entries.map((e) => e.name).sort();
     if (!names.includes("smoke.txt") || !names.includes("nested")) {
       throw new Error(`unexpected directory listing: ${names.join(", ")}`);
+    }
+    if (entries.some((e) => e.path === "/workspace")) {
+      throw new Error("directory listing includes the listed directory itself");
+    }
+    for (const e of entries) {
+      if (Number.isNaN(Date.parse(e.modifiedAt)) || !e.modifiedAt.endsWith("Z")) {
+        throw new Error(`modifiedAt is not a UTC ISO timestamp: ${e.modifiedAt}`);
+      }
     }
     console.error("[smoke] listed files");
 

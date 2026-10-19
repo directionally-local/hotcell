@@ -487,7 +487,8 @@ export class ContainerDriver implements Driver {
       Cmd: [
         "/bin/sh",
         "-c",
-        `find ${shellEscape(opts.path)} -maxdepth 1 -printf '%y|%p|%s|%TY-%Tm-%TdT%TH:%TM:%TS\\n'`,
+        // Contents only, mtime as epoch seconds, to match the microVM agent (os.ReadDir, RFC 3339 UTC).
+        `find ${shellEscape(opts.path)} -mindepth 1 -maxdepth 1 -printf '%y|%p|%s|%T@\\n'`,
       ],
       AttachStdout: true,
       AttachStderr: true,
@@ -533,7 +534,7 @@ export class ContainerDriver implements Driver {
         name,
         isDirectory: type === "d",
         size: Number(size ?? 0),
-        modifiedAt: mtime ?? new Date().toISOString(),
+        modifiedAt: mtime ? new Date(Number(mtime) * 1000).toISOString() : new Date().toISOString(),
       };
     });
   }
