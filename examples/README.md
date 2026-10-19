@@ -22,7 +22,19 @@ await agent.generate("Add a /health route and run the tests.");
 
 See [`mastra-agent/`](./mastra-agent) for a runnable example.
 
-## 2. OpenCode (one command, via OpenRouter)
+## 2. Autopilot (first-class CLI integration)
+
+Create a sandbox with Autopilot installed and connected to hotcell’s OpenRouter gateway, then attach an interactive terminal:
+
+```bash
+hotcell keys add openrouter
+hotcell create --autopilot --repo https://github.com/you/app --branch auto
+hotcell terminal <id>      # inside: cd app && autopilot
+```
+
+`--autopilot` implies `--egress`. It installs the `autopilot-ai` npm package (which provides the `autopilot` command) and configures Autopilot’s custom endpoint with the sandbox’s revocable gateway token. Its config lives on the persistent workspace disk, including on Apple VZ. **Do not install `npm i -g autopilot`**: that npm package is an unrelated cryptocurrency CLI.
+
+## 3. OpenCode (one-command headless runner)
 
 Launch a sandbox, clone a repo, run a headless [OpenCode](https://opencode.ai) task through [OpenRouter](https://openrouter.ai), and destroy the sandbox when done — your real key never enters the sandbox (it's swapped in by the egress gateway):
 

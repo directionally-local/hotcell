@@ -3,19 +3,18 @@ import type { GlobalArgs } from "./cli.js";
 import { parseEnvPairs } from "./env.js";
 import { injectedEnv } from "./envconfig.js";
 import { startProgress } from "./progress.js";
-import { nodeCapableImage, OPENCODE_SETUP } from "./setups.js";
+import { nodeCapableImage, AUTOPILOT_SETUP, OPENCODE_SETUP } from "./setups.js";
 import { formatError, parseLimitFlags } from "./util.js";
 
 /**
  * hotcell create [--image I] [--env K=V,…] [--sleep-after MS] [--egress] [--label K=V,…]
- *           [--setup "cmd"] [--opencode]
+ *           [--setup "cmd"] [--autopilot] [--opencode]
  *
  * Provision a standalone, persistent sandbox and print its id (unlike `sb run`,
- * which runs a command and destroys the sandbox). With `--egress`, also prints the
- * provider env exports the gateway wired in. `--opencode` preinstalls the OpenCode
- * agent wired to the LLM gateway (implies --egress). Creation is detached: each
- * sandbox shows live status (TTY stderr) while the daemon provisions it, so slow
- * creates (repo clone + heavy setup) can't time out client-side.
+ * which runs a command and destroys the sandbox). `--autopilot` and `--opencode`
+ * preinstall their agent wired to the LLM gateway (both imply --egress). Creation is
+ * detached: each sandbox shows live status (TTY stderr) while the daemon provisions
+ * it, so slow creates (repo clone + heavy setup) can't time out client-side.
  */
 export async function createCommand(
   positional: string[],
@@ -25,18 +24,20 @@ export async function createCommand(
   const client = new HotcellClient({ endpoint: globals.endpoint, apiKey: globals.apiKey });
 
   const image = typeof flags.image === "string" ? flags.image : undefined;
+  const autopilot = flags.autopilot === true;
   const opencode = flags.opencode === true;
-  const egress = flags.egress === true || opencode;
+  const egress = flags.egress === true || autopilot || opencode;
   const egressSpendCapUsd =
     typeof flags["egress-spend-cap"] === "string" ? Number(flags["egress-spend-cap"]) : undefined;
   const sleepAfter =
     typeof flags["sleep-after"] === "string" ? Number(flags["sleep-after"]) : undefined;
   const driver = typeof flags.driver === "string" ? flags.driver : undefined;
   const { memoryMb, cpus, pidsLimit } = parseLimitFlags(flags);
-  // --opencode appends its canned step after any user --setup, so prerequisites
-  // the user installs are in place first.
+  // Harness setup follows user prerequisites; Autopilot is the preferred install
+  // when both harness flags are explicitly supplied.
   const setupSteps = [
     ...(typeof flags.setup === "string" ? [flags.setup] : []),
+    ...(autopilot ? [AUTOPILOT_SETUP] : []),
     ...(opencode ? [OPENCODE_SETUP] : []),
   ];
   const setup = setupSteps.length ? setupSteps : undefined;
@@ -46,12 +47,13 @@ export async function createCommand(
   const branch =
     typeof flags.branch === "string" ? flags.branch : flags.branch === true ? "auto" : undefined;
 
-  if (opencode && process.stderr.isTTY) {
+  if ((autopilot || opencode) && process.stderr.isTTY) {
+    const harness = autopilot ? "Autopilot" : "OpenCode";
     if (flags.egress !== true) {
-      console.error("  (--opencode implies --egress — OpenCode reads the gateway env)");
+      console.error(`  (--${autopilot ? "autopilot" : "opencode"} implies --egress — ${harness} uses the gateway)`);
     }
     if (!nodeCapableImage(image)) {
-      console.error(`  (--opencode needs npm — ${image} may not ship node)`);
+      console.error(`  (--${autopilot ? "autopilot" : "opencode"} needs npm — ${image} may not ship node)`);
     }
   }
 
@@ -64,7 +66,13 @@ export async function createCommand(
   try {
     const injected = injectedEnv();
     const explicit = typeof flags.env === "string" ? parseEnvPairs(flags.env.split(",")) : {};
-    const merged = { ...injected, ...explicit };
+    const merged = {
+      ...injected,
+      // Autopilot normally stores config below /root/.config, which is tmpfs on
+      // Apple VZ. Keep its gateway token/config on the persistent workspace disk.
+      ...(autopilot ? { XDG_CONFIG_HOME: "/workspace/.config" } : {}),
+      ...explicit,
+    };
     if (Object.keys(merged).length) env = merged;
     if (typeof flags.label === "string") labels = parseEnvPairs(flags.label.split(","));
   } catch (err) {
@@ -199,10 +207,13 @@ export async function createCommand(
     if (branch) e(`  branch     ${branch === "auto" ? "new (auto-named)" : branch}`);
     e("");
     e(`  open a shell   hotcell terminal ${si.id}`);
-    if (!setup && !repo) e(`  preinstall     recreate with  --setup "…"  or  --opencode   ·   clone a repo:  --repo <url>`);
+    if (!setup && !repo) e(`  preinstall     recreate with  --autopilot  or  --opencode   ·   clone a repo:  --repo <url>`);
     if (/slim/.test(si.image)) e(`  fuller image   --image python:3.11 (+git +build tools)   ·   see all: hotcell images`);
-    if (opencode) e(`  run the agent  hotcell terminal ${si.id}  then: opencode`);
-    else e(`  run an agent   see examples/ (OpenCode, Codex, Claude Code, Mastra) — add --egress for keyless LLM`);
+    if (autopilot) {
+      e(`  run the agent  hotcell terminal ${si.id}  then: autopilot`);
+      if (opencode) e(`  alternate      opencode (also installed)`);
+    } else if (opencode) e(`  run the agent  hotcell terminal ${si.id}  then: opencode`);
+    else e(`  run an agent   see examples/ (Autopilot, OpenCode, Codex, Claude Code, Mastra) — add --egress for keyless LLM`);
   }
 
   // TTY-only guidance; and a token-listing hiccup must NOT flip the exit code —

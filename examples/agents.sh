@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # agents.sh — spin up N isolated hotcell sandboxes on one repo, each ready to code
-# with OpenCode. The LLM *and* GitHub both go through the hotcell egress gateway,
+# with Autopilot. The LLM *and* GitHub both go through the hotcell egress gateway,
 # so neither your provider key nor your GitHub token ever enters a sandbox.
 #
 # Turns the "5 folders + 5 terminals" ritual into two commands:
@@ -43,8 +43,8 @@ if ! $HC keys ls 2>/dev/null | grep -qiw github; then
     echo "need GitHub auth on the host:  gh auth login   (then re-run)"; exit 1
   fi
 fi
-$HC keys ls 2>/dev/null | grep -qiwE 'openrouter|openai|anthropic|google' \
-  || { echo "add an LLM key first, e.g.:  hotcell keys add openrouter"; exit 1; }
+$HC keys ls 2>/dev/null | grep -qiw openrouter \
+  || { echo "add an OpenRouter key first:  hotcell keys add openrouter"; exit 1; }
 
 # ---- build the per-sandbox scripts as FILES (quoted heredocs = no host-side
 #      expansion or execution), placeholders sed-replaced, then base64'd --------
@@ -64,13 +64,10 @@ PR
 sed -i.bak "s#__SLUG__#$slug#g" "$work/pr" && rm -f "$work/pr.bak"
 prb64=$(base64 < "$work/pr" | tr -d '\n')
 
-# per-sandbox setup: install OpenCode + point it at the gateway, wire the git
-# remote through the gateway, drop in the 'pr' helper.
+# per-sandbox setup: wire the git remote through the gateway and drop in the
+# 'pr' helper. Autopilot is installed/configured by `hotcell create --autopilot`.
 cat > "$work/setup" <<'SETUP'
 set -e
-npm i -g opencode-ai >/dev/null 2>&1
-mkdir -p ~/.config/opencode
-printf '{"provider":{"openrouter":{"options":{"baseURL":"%s/v1","apiKey":"%s"}}}}' "$OPENROUTER_BASE_URL" "$OPENROUTER_API_KEY" > ~/.config/opencode/opencode.json
 gw=$(printf '%s' "$GITHUB_BASE_URL" | sed -E 's#https?://##; s#/github$##')
 git -C /workspace/__NAME__ remote set-url origin "http://x-access-token:${GITHUB_API_KEY}@${gw}/github-git/__SLUG__.git"
 git -C /workspace/__NAME__ config user.name  hotcell-agent
@@ -82,14 +79,14 @@ setupb64=$(base64 < "$work/setup" | tr -d '\n')
 
 # ---- spin up N in parallel -------------------------------------------------
 : > "$IDS_FILE"
-echo "spinning up $COUNT sandbox(es) on $slug (repo + OpenCode + keyless GitHub) …"
+echo "spinning up $COUNT sandbox(es) on $slug (repo + Autopilot + keyless GitHub) …"
 for i in $(seq 1 "$COUNT"); do
   (
-    id=$($HC create --egress --repo "$REPO" --name "agent-$i" --label agents=1 2>/dev/null | head -1)
+    id=$($HC create --autopilot --repo "$REPO" --name "agent-$i" --label agents=1 2>/dev/null | head -1)
     [ -n "$id" ] || { echo "  #$i  create failed"; exit 1; }
     if $HC exec "$id" "printf '%s' '$setupb64' | base64 -d | bash" >/dev/null 2>&1; then
       echo "$id" >> "$IDS_FILE"
-      printf '  #%s  hotcell terminal %s   →  cd %s && opencode\n' "$i" "$id" "$name"
+      printf '  #%s  hotcell terminal %s   →  cd %s && autopilot\n' "$i" "$id" "$name"
     else
       echo "  #$i  setup failed (id $id) — inspect: hotcell terminal $id"
     fi
@@ -98,6 +95,6 @@ done
 wait
 
 echo
-echo "open a terminal per line above; inside each run 'opencode', prompt a feature,"
+echo "open a terminal per line above; inside each run 'autopilot', prompt a feature,"
 echo "and when it's done: pr \"<title>\"  (pushes + opens a PR — no token in the sandbox)."
 echo "tear everything down:  $0 --rm"

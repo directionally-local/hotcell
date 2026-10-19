@@ -90,7 +90,7 @@ hotcell keys add github --value "$(gh auth token)"   # once, on the host — nev
 
 - **API** (`gh`-style calls, PRs): `$GITHUB_BASE_URL/…` with `Authorization: Bearer $GITHUB_API_KEY` — the gateway swaps in your real token at api.github.com.
 - **git clone / fetch / push — automatic**: create a sandbox with `--egress` and a GitHub `--repo` while a `github` key is registered, and the daemon wires the clone's `origin` through the gateway for you — `git push` works keylessly out of the box. (Manual form, for any other remote: `http://x-access-token:$GITHUB_API_KEY@<gateway>/github-git/<owner>/<repo>.git`.)
-- [`examples/agents.sh`](../examples/agents.sh) wires all of this for you: N sandboxes on one repo, OpenCode installed, git remote through the gateway, and a `pr` helper that pushes the branch + opens a PR without a token in the sandbox.
+- [`examples/agents.sh`](../examples/agents.sh) wires all of this for you: N sandboxes on one repo, Autopilot installed, git remote through the gateway, and a `pr` helper that pushes the branch + opens a PR without a token in the sandbox.
 
 ## Default-deny egress (Linux)
 

@@ -36,18 +36,18 @@ hotcell rm --all                                                  # everything g
 ## Five agents on one repo
 
 ```bash
-hotcell create -n 5 --name feat --branch auto --opencode \
+hotcell create -n 5 --name feat --branch auto --autopilot \
     --repo https://github.com/you/app
 ```
 
-Five isolated cells, each with the repo cloned, its own branch (`feat-1`…`feat-5`), and OpenCode preinstalled and pointed at the gateway (`--opencode` implies `--egress`). Live per-cell progress while they provision — slow setups can't falsely time out. Open a terminal per cell and put each agent on a different feature:
+Five isolated cells, each with the repo cloned, its own branch (`feat-1`…`feat-5`), and Autopilot preinstalled and wired to the gateway (`--autopilot` implies `--egress`). Live per-cell progress while they provision — slow setups can't falsely time out. Open a terminal per cell and run Autopilot on a different feature:
 
 ```bash
-hotcell terminal <id>      # inside: cd app && opencode
+hotcell terminal <id>      # inside: cd app && autopilot
 hotcell rm --all           # done — five cells gone, your repo untouched
 ```
 
-Your OpenRouter and GitHub keys stay on the host: with `--egress`, a cell only ever holds a short-lived per-cell token — LLM calls go through hotcell's gateway, and each cell's git `origin` is wired through it automatically, so **`git push` works keylessly out of the box**. (OpenCode-specific wiring + a `pr` helper: [`examples/agents.sh`](examples/agents.sh).)
+The real OpenRouter key stays on the host: Autopilot uses a per-sandbox gateway token, while the daemon swaps in the real key and meters usage. `--opencode` remains available as an alternative; the [`examples/agents.sh`](examples/agents.sh) workflow demonstrates keyless GitHub PR creation.
 
 <p align="center">
   <img src="docs/media/key-vs-token.png" width="820" alt="On the host, hotcell keys ls shows the real key; inside the sandbox, printenv shows only a short-lived token" />

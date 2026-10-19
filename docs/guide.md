@@ -39,7 +39,7 @@ hotcell create --repo https://github.com/me/app --ref main --setup "npm install"
 hotcell is built to *run agents*, not just containers — a sandbox can come up with a **repo cloned in** (`--repo`), **LLM access wired without keys inside** (`--egress`), **per-token + per-sandbox spend caps**, **resource caps**, and **per-agent cost/observability**.
 
 - **Mastra (first-class):** [`@hotcell/mastra`](../packages/mastra) is a Mastra `Workspace` sandbox provider — drop `HotcellSandbox` in where you'd use `E2BSandbox`/`ModalSandbox` and your agent runs on your own hardware.
-- **CLI harnesses:** run **OpenCode / Codex / Claude Code / pi.dev** (or any headless agent) in one command — e.g. [`examples/opencode.sh <repo> "<task>"`](../examples/opencode.sh) creates a sandbox, clones the repo, runs OpenCode headless via OpenRouter (your key stays on the daemon), and destroys the sandbox when done.
+- **CLI harnesses:** create Autopilot-ready sandboxes with `hotcell create --autopilot` (it installs `autopilot-ai`, configures the gateway, and implies `--egress`); OpenCode, Codex, Claude Code, pi.dev, and other agents remain usable too. For a headless one-shot OpenCode example, see [`examples/opencode.sh <repo> "<task>"`](../examples/opencode.sh).
 
 ```ts
 import { Agent, Workspace } from "@mastra/core";

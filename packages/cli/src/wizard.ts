@@ -3,7 +3,7 @@ import { resolveSetting } from "./configfile.js";
 import { createCommand } from "./create.js";
 import { loadKeys } from "./keystore.js";
 import { c, confirm, select, textInput } from "./prompts.js";
-import { nodeCapableImage, OPENCODE_SETUP } from "./setups.js";
+import { nodeCapableImage, AUTOPILOT_SETUP, OPENCODE_SETUP } from "./setups.js";
 import { shellQuote } from "./util.js";
 
 /**
@@ -76,29 +76,36 @@ export async function createWizard(globals: GlobalArgs): Promise<number> {
     parts.push(`-n ${count}`);
   }
 
-  // egress + opencode
+  // Any key enables gateway egress, but harness setup specifically requires
+  // OpenRouter because Autopilot and OpenCode speak through that provider.
   const keys = loadKeys();
-  // Any key counts — provider names are free-form, so we can't tell an LLM key
-  // from a Stripe one by name, and guessing would misreport custom-named keys.
   const hasKey = Object.keys(keys).length > 0;
   if (!hasKey) {
     out.write(`  ${c.dim}no provider key on the host yet (hotcell keys add <provider>) — egress would inject nothing${c.reset}\n`);
   }
+
+  // Autopilot is the preferred interactive harness; OpenCode remains available
+  // as an explicit alternative. Both need npm and an OpenRouter gateway key.
   if (await confirm("wire keyless egress (providers through the gateway)?", hasKey)) {
     flags.egress = true;
     parts.push("--egress");
-    // OpenCode needs npm — only offer it on images that have node.
-    const nodeCapable = nodeCapableImage(image);
-    if (keys.openrouter && nodeCapable && (await confirm("install OpenCode, ready to run?", false))) {
-      flags.opencode = true;
-      parts.push("--opencode");
+    const nodeCapable = nodeCapableImage(image ?? configuredDefault);
+    if (keys.openrouter && nodeCapable) {
+      if (await confirm("install Autopilot, ready to run?", true)) {
+        flags.autopilot = true;
+        parts.push("--autopilot");
+      } else if (await confirm("install OpenCode instead?", false)) {
+        flags.opencode = true;
+        parts.push("--opencode");
+      }
     } else if (keys.openrouter && !nodeCapable) {
-      out.write(`  ${c.dim}(OpenCode skipped — ${image} has no node/npm)${c.reset}\n`);
+      out.write(`  ${c.dim}(Autopilot/OpenCode skipped — ${image ?? configuredDefault} has no node/npm)${c.reset}\n`);
     }
   }
 
   out.write(`\n  ${c.dim}equivalent:${c.reset} ${parts.join(" ")}\n`);
-  if (flags.opencode) out.write(`  ${c.dim}(--opencode runs: ${OPENCODE_SETUP})${c.reset}\n`);
+  if (flags.autopilot) out.write(`  ${c.dim}(--autopilot runs: ${AUTOPILOT_SETUP})${c.reset}\n`);
+  else if (flags.opencode) out.write(`  ${c.dim}(--opencode runs: ${OPENCODE_SETUP})${c.reset}\n`);
   if (!(await confirm("create?", true))) {
     out.write(`  ${c.dim}cancelled${c.reset}\n`);
     return 0;

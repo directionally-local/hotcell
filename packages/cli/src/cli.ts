@@ -187,11 +187,13 @@ Commands:
 
   hotcell create [-i] [-n <count>] [--name <handle>] [--image I] [--driver container|firecracker|applevz] [--env K=V,…]
             [--sleep-after MS] [--egress] [--label K=V,…]
-            [--repo <git-url>] [--ref <branch>] [--branch <name>] [--setup "cmd"] [--opencode]
+            [--repo <git-url>] [--ref <branch>] [--branch <name>] [--setup "cmd"] [--autopilot] [--opencode]
             [--memory <MB>] [--cpus <n>] [--pids <n>]
     Provision a standalone persistent sandbox and print its id.
-    --opencode preinstalls the OpenCode agent wired to the LLM gateway (implies
-    --egress; needs an openrouter key on the host and a node-capable image).
+    --autopilot installs autopilot-ai (run the command autopilot) and wires it to the
+    LLM gateway (implies --egress; needs an openrouter key and a node-capable image).
+    --opencode installs OpenCode as an alternative wired to the same gateway
+    (also implies --egress; needs an openrouter key and a node-capable image).
     --branch creates + checks out a new branch after cloning (bare --branch
     auto-names it) — one branch per sandbox = clean parallel PRs.
     -n 5 creates five identical cells in one command (one id per line);
