@@ -22,7 +22,7 @@
     "@types/dockerode": "^3.3.31",
     "@types/node": "^22.5.0",
     "tsx": "^4.16.0",
-    "typescript": "^5.5.0"
+    "typescript": "^7.0.2"
   },
   "repository": {
     "type": "git",

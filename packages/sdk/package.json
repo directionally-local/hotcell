@@ -39,7 +39,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "typescript": "^5.5.0"
+    "typescript": "^7.0.2"
   },
   "bugs": {
     "url": "https://github.com/sinameraji/hotcell/issues"

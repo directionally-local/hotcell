@@ -17,6 +17,7 @@ All from the repo root unless noted. There are **no test/lint/format scripts** �
 ```bash
 npm install                          # first step
 npm run build                        # tsc all workspaces -> packages/*/dist
+npm run typecheck:fast               # tsrs (Rust TS checker), ~1 s for all workspaces; needs one prior build (packages resolve each other via dist); build stays the gate
 npm run dev:daemon                   # daemon in watch mode (tsx, no dist write)
 npm run dev:cli                      # CLI in watch mode (tsx)
 npm run smoke                        # build + run packages/daemon/dist/smoke.js (create→exec→files→destroy)

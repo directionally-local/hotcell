@@ -8,7 +8,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @hotcell/sdk && npm run build --workspaces --if-present",
+    "build": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && npm run build --workspace @hotcell/mastra",
+    "typecheck:fast": "tsrs --noEmit -p packages/sdk/tsconfig.json && tsrs --noEmit -p packages/daemon/tsconfig.json && tsrs --noEmit -p packages/cli/tsconfig.json && tsrs --noEmit -p packages/mastra/tsconfig.json",
     "dev:daemon": "npm run dev --workspace @hotcell/daemon",
     "dev:cli": "npm run dev --workspace @hotcell/cli",
     "smoke": "npm run build && node packages/daemon/dist/smoke.js",
@@ -16,9 +17,9 @@
     "check:egress": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/egress-check.js",
     "check:audit": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/audit-check.js",
     "check:versions": "node scripts/check-release-versions.mjs",
-    "check:prompts": "npm run build --workspace @hotcell/sdk && npm run build --workspace hotcell && node packages/cli/dist/prompts-check.js",
-    "check:startup": "npm run build --workspace @hotcell/sdk && npm run build --workspace hotcell && node packages/cli/dist/startup-check.js",
-    "check:env": "npm run build --workspace @hotcell/sdk && npm run build --workspace hotcell && node packages/cli/dist/env-check.js",
+    "check:prompts": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/prompts-check.js",
+    "check:startup": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/startup-check.js",
+    "check:env": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/env-check.js",
     "check:agent": "npm run build --workspace @hotcell/daemon && (cd agent && go build -o /tmp/hotcell-agent-check ./cmd/hotcell-agent) && node packages/daemon/dist/agent-check.js",
     "check:applevz": "npm run build:vz && npm run build --workspace @hotcell/daemon && node packages/daemon/dist/applevz-check.js",
     "check:router": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/router-check.js",
@@ -38,5 +39,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
   }
 }
