@@ -207,6 +207,9 @@ export interface Driver {
    */
   initEgress?(): Promise<void>;
 
+  /** Resolve a source IP on the container egress bridge to its sandbox record. */
+  sandboxIdForEgressIp?(ip: string): Promise<string | undefined>;
+
   /**
    * Run a command inside the sandbox, streaming output via `onEvent`.
    * Resolves with the process exit code.

@@ -58,6 +58,9 @@ export class ContainerDriver implements Driver {
   private ensured = new Set<string>();
   private egress?: EgressNetConfig;
   private egressNetReady = false;
+  private egressIpCache = new Map<string, string>();
+  private egressIpCacheAt = 0;
+  private egressIpRefresh?: Promise<void>;
 
   constructor(docker?: Docker, egress?: EgressNetConfig) {
     this.docker = docker ?? new Docker();
@@ -102,6 +105,47 @@ export class ContainerDriver implements Driver {
    */
   async initEgress(): Promise<void> {
     if (this.egress?.enforce) await this.ensureEgressNetwork();
+  }
+
+  /** Map a logged firewall source IP back to the sandbox id Docker labeled on create. */
+  async sandboxIdForEgressIp(ip: string): Promise<string | undefined> {
+    if (!this.egress?.enforce) return undefined;
+    if (Date.now() - this.egressIpCacheAt > 2_000) {
+      this.egressIpRefresh ??= this.refreshEgressIpCache().finally(() => {
+        this.egressIpRefresh = undefined;
+      });
+      await this.egressIpRefresh;
+    }
+    return this.egressIpCache.get(ip);
+  }
+
+  private async refreshEgressIpCache(): Promise<void> {
+    type ContainerNetworkInfo = {
+      Labels?: Record<string, string>;
+      NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> };
+    };
+    try {
+      const containers = await this.docker.listContainers({
+        all: true,
+        filters: { network: [this.egress!.network] },
+      }) as unknown as ContainerNetworkInfo[];
+      const refreshed = new Map<string, string>();
+      for (const container of containers) {
+        const sandboxId = container.Labels?.["sbx.id"] ?? container.Labels?.["hotcell.id"];
+        if (!sandboxId) continue;
+        for (const network of Object.values(container.NetworkSettings?.Networks ?? {})) {
+          if (network.IPAddress) refreshed.set(network.IPAddress, sandboxId);
+        }
+      }
+      this.egressIpCache = refreshed;
+      this.egressIpCacheAt = Date.now();
+    } catch (err) {
+      log.warn("could not refresh container IP map for egress audit", {
+        error: String((err as Error)?.message ?? err),
+      });
+      this.egressIpCache = new Map();
+      this.egressIpCacheAt = Date.now();
+    }
   }
 
   /**

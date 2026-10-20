@@ -16,7 +16,7 @@ import { createProxyServer } from "./proxy/server.js";
 import { buildProviders, createEgressProxy, type EgressServer } from "./proxy/egress.js";
 import { loadProviderKeyMap } from "./keystore.js";
 import { loadModelPrices } from "./pricing.js";
-import { ensureEgressFirewall } from "./net/firewall.js";
+import { ensureEgressFirewall, startEgressDropMonitor } from "./net/firewall.js";
 import { errorMessage } from "./util.js";
 
 /** A loopback bind host (unreachable from sandboxes on native-Linux dockerd). */
@@ -158,13 +158,20 @@ async function main(): Promise<void> {
   // provider keys (SBX_PROVIDER_KEY_*) are set.
   // Install the host default-deny egress firewall (Linux + SBX_EGRESS_ENFORCE only;
   // advisory no-op otherwise). Best-effort: logs and continues if it can't.
-  await ensureEgressFirewall(config);
+  let stopEgressDropMonitor = () => {};
+  const dropLoggingInstalled = await ensureEgressFirewall(config);
 
   // Reconcile the egress bridge network at boot so a subnet collision (e.g. a
   // stale network from a pre-rename daemon) fails fast with an actionable message
   // instead of a 422 on the first create.
   if (config.egressEnforce && typeof driver.initEgress === "function") {
     await driver.initEgress();
+  }
+  if (dropLoggingInstalled) {
+    stopEgressDropMonitor = startEgressDropMonitor(
+      (sourceIp) => driver.resolveEgressSourceIp(sourceIp),
+      config,
+    );
   }
 
   const providers = buildProviders(config);
@@ -219,6 +226,7 @@ async function main(): Promise<void> {
     log.info("shutting down");
     if (reaper) clearInterval(reaper);
     if (sampler) clearInterval(sampler);
+    stopEgressDropMonitor();
     // Failsafe: `server.close()`'s callback waits for every connection to drain,
     // and an attached terminal WebSocket / SSE exec stream / keep-alive client
     // NEVER drains — without this the process lingers forever as a listener-less
