@@ -13,7 +13,7 @@ dependencies = []
 keywords = ["sandbox", "ai-agents", "hotcell"]
 
 [project.urls]
-Homepage = "https://hotcell.sh"
+Homepage = "https://directionallylocal.com/hotcell/"
 Repository = "https://github.com/sinameraji/hotcell"
 
 [tool.setuptools.packages.find]
