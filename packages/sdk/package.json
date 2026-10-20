@@ -1,6 +1,6 @@
 {
   "name": "@hotcell/sdk",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "description": "Zero-dependency TypeScript client for the hotcell sandbox daemon",
   "license": "Apache-2.0",
   "type": "module",
