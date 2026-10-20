@@ -298,14 +298,16 @@ export interface Config {
    */
   apiKey: string;
   /**
-   * OTLP/HTTP traces endpoint (e.g. `http://localhost:4318`). When set, spans are
-   * batch-exported to `<endpoint>/v1/traces`. Empty disables export; recent spans
-   * are always kept in-memory for `GET /traces` regardless.
+   * Shared OTLP/HTTP endpoint for traces and audit logs (e.g. `http://localhost:4318`).
+   * Spans export to `/v1/traces`; audit records export to `/v1/logs`. Empty disables
+   * trace export and is the audit fallback when no audit-specific override is set.
    */
   otlpEndpoint: string;
-  /** OTLP/HTTP endpoint for audit logs; empty disables export. */
+  /** Headers shared by OTLP exporters, parsed from `HOTCELL_OTLP_HEADERS`. */
+  otlpHeaders: Record<string, string>;
+  /** Audit-only endpoint override; `HOTCELL_OTEL_ENDPOINT` remains a legacy alias. */
   auditOtlpEndpoint: string;
-  /** OTLP/HTTP headers encoded as a JSON object. */
+  /** Audit-only headers; `HOTCELL_OTEL_HEADERS` remains a legacy override. */
   auditOtlpHeaders: Record<string, string>;
   /** Local append-only JSONL audit log path; empty disables local persistence. */
   auditPath: string;
@@ -400,8 +402,11 @@ export function loadConfig(): Config {
     logFormat: env("LOG_FORMAT") === "json" ? "json" : "pretty",
     apiKey: env("API_KEY") ?? "",
     otlpEndpoint: (env("OTLP_ENDPOINT") ?? "").replace(/\/$/, ""),
-    auditOtlpEndpoint: (env("OTEL_ENDPOINT") ?? "").replace(/\/$/, ""),
-    auditOtlpHeaders: parseHeaders(env("OTEL_HEADERS")),
+    otlpHeaders: parseHeaders(env("OTLP_HEADERS")),
+    // Canonical OTLP endpoint/headers are shared; the older OTEL_* settings
+    // remain audit-specific overrides for backward compatibility.
+    auditOtlpEndpoint: (env("OTEL_ENDPOINT") ?? env("OTLP_ENDPOINT") ?? "").replace(/\/$/, ""),
+    auditOtlpHeaders: parseHeaders(env("OTEL_HEADERS") ?? env("OTLP_HEADERS")),
     auditPath: env("AUDIT_FILE") ?? join(stateRoot(), "audit.jsonl"),
     metricsHistory: Number(env("METRICS_HISTORY") ?? 60),
     traceRing: Number(env("TRACE_RING") ?? 200),

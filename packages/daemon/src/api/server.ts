@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { audit } from "../audit.js";
+import { audit, redactCommandForAudit } from "../audit.js";
 import type { Duplex } from "node:stream";
 import { type BackupInfo, BackupRegistry } from "../backups.js";
 import { previewUrl, type Config } from "../config.js";
@@ -175,6 +175,7 @@ async function handleTerminalUpgrade(
     return;
   }
   if (!isAllowedHost(req, config)) {
+    auditAccessDenied("auth.host_rejected", "GET", url.pathname, "host_not_allowed", driver, store);
     socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
     socket.destroy();
     return;
@@ -182,6 +183,7 @@ async function handleTerminalUpgrade(
   if (config.apiKey) {
     const provided = url.searchParams.get("key") ?? bearerFromHeader(req);
     if (!provided || !safeEqual(provided, config.apiKey)) {
+      auditAccessDenied("auth.rejected", "GET", url.pathname, "invalid_api_key", driver, store);
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
@@ -225,11 +227,13 @@ async function handleTerminalUpgrade(
   try {
     term = await driver.openTerminal(id, { cols, rows, env: record.env });
   } catch (err) {
+    audit({ event: "sandbox.terminal.open.failed", sandboxId: id, driver: record.driver ?? driver.name });
     ws.send(`\r\n[sbx] failed to open terminal: ${errorMessage(err)}\r\n`);
     ws.close();
     span.setStatus("error").end();
     return;
   }
+  audit({ event: "sandbox.terminal.open", sandboxId: id, driver: record.driver ?? driver.name });
   log.info("terminal opened", { sandbox: id, traceId: span.traceId });
 
   term.stream.on("data", (chunk: Buffer) => ws.send(chunk));
@@ -254,6 +258,7 @@ async function handleTerminalUpgrade(
 
   ws.onClose(() => {
     term.close();
+    audit({ event: "sandbox.terminal.close", sandboxId: id, driver: record.driver ?? driver.name });
     span.end();
     log.info("terminal closed", { sandbox: id });
   });
@@ -442,7 +447,26 @@ function resolveLimits(
 function normalizeRoute(path: string): string {
   return path
     .replace(/^\/sandboxes\/[^/]+/, "/sandboxes/:id")
-    .replace(/\/(processes|sessions|code-contexts|expose|backups)\/[^/]+/, "/$1/:sub");
+    .replace(/\/(processes|sessions|code-contexts|expose|backups|egress-tokens)\/[^/]+/g, "/$1/:sub");
+}
+
+/** Audit an access rejection without recording credentials or raw path identifiers. */
+function auditAccessDenied(
+  event: string,
+  method: string,
+  path: string,
+  reason: string,
+  driver: Driver,
+  store: SandboxStore,
+): void {
+  const sandboxId = path.match(/^\/sandboxes\/([^/]+)/)?.[1];
+  const record = sandboxId ? store.get(sandboxId) : undefined;
+  audit({
+    event,
+    sandboxId,
+    driver: record?.driver ?? driver.name,
+    attributes: { method, route: normalizeRoute(path), reason },
+  });
 }
 
 /**
@@ -506,10 +530,12 @@ async function handle(
   const method = req.method ?? "GET";
 
   if (!isAllowedHost(req, config)) {
+    auditAccessDenied("auth.host_rejected", method, path, "host_not_allowed", driver, store);
     return sendJson(res, 403, { error: "host not allowed" });
   }
 
   if (!isAuthorized(req, config, path)) {
+    auditAccessDenied("auth.rejected", method, path, "invalid_api_key", driver, store);
     res.setHeader("WWW-Authenticate", "Bearer");
     return sendJson(res, 401, { error: "missing or invalid API key" });
   }
@@ -793,8 +819,15 @@ async function handle(
 
   const backupIdMatch = path.match(/^\/backups\/([^/]+)$/);
   if (method === "DELETE" && backupIdMatch) {
+    const backupInfo = await backups.get(backupIdMatch[1]);
     const removed = await backups.remove(backupIdMatch[1]);
     if (!removed) return sendJson(res, 404, { error: "backup not found" });
+    audit({
+      event: "sandbox.backup.delete",
+      sandboxId: backupInfo?.sandboxId,
+      driver: backupInfo ? store.get(backupInfo.sandboxId)?.driver ?? driver.name : driver.name,
+      attributes: { backupId: backupIdMatch[1] },
+    });
     return sendJson(res, 200, { backupId: backupIdMatch[1], deleted: true });
   }
 
@@ -897,15 +930,6 @@ async function handle(
 
 function safeRepoForAudit(repo: string): string {
   return repo.replace(/:\/\/[^/@]+@/g, "://").split(/[?#]/, 1)[0]?.slice(0, 512) ?? "";
-}
-
-function safeCommandForAudit(command: string): string {
-  return command
-    .replace(/\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
-    .replace(/(authorization\s*:\s*bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g, "[REDACTED]")
-    .replace(/(https?:\/\/)[^/@\s]+@/gi, "$1[REDACTED]@")
-    .slice(0, 512);
 }
 
 async function createSandbox(
@@ -1298,6 +1322,7 @@ async function createBackup(
     bytes,
   };
   await backups.save(info);
+  audit({ event: "sandbox.backup.create", sandboxId: id, driver: record.driver ?? driver.name, attributes: { backupId, bytes } });
   sendJson(res, 201, info);
 }
 
@@ -1316,6 +1341,7 @@ async function restoreBackup(
   if (!info) return sendJson(res, 404, { error: "backup not found" });
   if (!(await ensureLive(res, driver, store, id, capacity))) return;
   await driver.restoreBackup(id, backups.tarPath(backupId));
+  audit({ event: "sandbox.backup.restore", sandboxId: id, driver: store.get(id)?.driver ?? driver.name, attributes: { backupId } });
   sendJson(res, 200, { id, restored: backupId });
 }
 
@@ -1552,6 +1578,7 @@ async function execInSandbox(
   // the whole run, not just the instant the request arrived.
   store.beginExec(id);
   const execStartedAt = Date.now();
+  audit({ event: "sandbox.exec.start", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: redactCommandForAudit(command), cwd: cwd ?? "" } });
   let auditExitCode = 1;
   const stopKeepalive = startSseKeepalive(res);
   try {
@@ -1575,7 +1602,7 @@ async function execInSandbox(
     write({ type: "exit", exitCode: 1 });
   } finally {
     stopKeepalive();
-    audit({ event: "sandbox.exec", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: safeCommandForAudit(command), cwd: cwd ?? "", exitCode: auditExitCode, durationMs: Date.now() - execStartedAt } });
+    audit({ event: "sandbox.exec", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: redactCommandForAudit(command), cwd: cwd ?? "", exitCode: auditExitCode, durationMs: Date.now() - execStartedAt } });
     store.endExec(id);
     res.end();
   }
@@ -1662,14 +1689,17 @@ async function handleFileAction(
           content: body.content,
           mode: typeof body.mode === "string" ? body.mode : undefined,
         });
+        audit({ event: "sandbox.file.write", sandboxId: id, driver: store.get(id)?.driver ?? driver.name, attributes: { path: path.slice(0, 512), bytes: Buffer.byteLength(body.content, "utf8") } });
         return sendJson(res, 200, { ok: true });
       }
       case "read": {
         const content = await driver.readFile(id, { path });
+        audit({ event: "sandbox.file.read", sandboxId: id, driver: store.get(id)?.driver ?? driver.name, attributes: { path: path.slice(0, 512), bytes: Buffer.byteLength(content, "utf8") } });
         return sendJson(res, 200, { content });
       }
       case "mkdir": {
         await driver.mkdir(id, { path, parents: body.parents === true });
+        audit({ event: "sandbox.file.mkdir", sandboxId: id, driver: store.get(id)?.driver ?? driver.name, attributes: { path: path.slice(0, 512), parents: body.parents === true } });
         return sendJson(res, 200, { ok: true });
       }
       case "list": {
@@ -1714,7 +1744,7 @@ async function startProcess(
       logPath,
     };
     store.addProcess(id, proc);
-    audit({ event: "sandbox.process.start", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: safeCommandForAudit(command), cwd: opts.cwd ?? "", procId } });
+    audit({ event: "sandbox.process.start", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: redactCommandForAudit(command), cwd: opts.cwd ?? "", procId } });
     return sendJson(res, 201, proc);
   } catch (err) {
     return sendJson(res, 500, { error: errorMessage(err) });
@@ -1851,6 +1881,7 @@ async function exposePort(
     url: previewUrl(config, id, port),
   };
   store.addExposed(id, exposed);
+  audit({ event: "sandbox.preview.expose", sandboxId: id, driver: store.get(id)?.driver ?? driver.name, attributes: { port, tokenConfigured: exposed.token !== null } });
   return sendJson(res, 201, exposed);
 }
 
@@ -1863,6 +1894,7 @@ function unexposePort(
   if (!store.get(id)) return sendJson(res, 404, { error: "not found" });
   const removed = store.removeExposed(id, port);
   if (!removed) return sendJson(res, 404, { error: "port not exposed" });
+  audit({ event: "sandbox.preview.unexpose", sandboxId: id, driver: store.get(id)?.driver, attributes: { port } });
   return sendJson(res, 200, { ok: true });
 }
 

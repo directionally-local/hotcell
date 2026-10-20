@@ -57,8 +57,9 @@ async function main(): Promise<void> {
   configureLogger({ level: config.logLevel, format: config.logFormat });
   configureAudit({ path: config.auditPath, endpoint: config.auditOtlpEndpoint, headers: config.auditOtlpHeaders });
   configureTracing({
-    serviceName: "sbd",
+    serviceName: "hotcell",
     otlpEndpoint: config.otlpEndpoint,
+    headers: config.otlpHeaders,
     ringSize: config.traceRing,
   });
   const store = new SandboxStore(config.dbPath);
