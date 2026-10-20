@@ -7,6 +7,7 @@ import {
   buildAuditEntry,
   buildOtlpLogsPayload,
   configureAudit,
+  drainAudit,
   flushAudit,
   redactCommandForAudit,
   stopAudit,
@@ -72,6 +73,11 @@ async function main(): Promise<void> {
     assert.equal(redactCommandForAudit(command).includes(secret), false, "secret leaked: " + command);
   }
   assert.equal(redactCommandForAudit("echo hello").includes("hello"), true);
+  // -u is only a secret when it carries user:password.
+  assert.equal(redactCommandForAudit("git push -u origin main"), "git push -u origin main");
+  assert.equal(redactCommandForAudit("sort -u names.txt"), "sort -u names.txt");
+  assert.equal(redactCommandForAudit("curl -u alice:s3cret https://x.test").includes("s3cret"), false);
+  assert.equal(redactCommandForAudit("curl --user=alice:s3cret https://x.test").includes("s3cret"), false);
 
   const requestBodies: Payload[] = [];
   let requests = 0;
@@ -123,6 +129,20 @@ async function main(): Promise<void> {
     assert.equal(queuedLogs.length, AUDIT_LIMITS.maxQueueEvents, "queue must remain bounded");
     assert.ok(requestBodies.slice(beforeQueue).every((body) =>
       body.resourceLogs[0]!.scopeLogs[0]!.logRecords.length <= AUDIT_LIMITS.maxBatchEvents));
+
+    const beforeDrain = requestBodies.length;
+    for (let i = 0; i < AUDIT_LIMITS.maxBatchEvents * 3; i++) {
+      audit({ event: "drain.sample", sandboxId: "drain-test", attributes: { index: i } });
+    }
+    await drainAudit(AUDIT_LIMITS.maxBatchesPerTick);
+    assert.equal(requestBodies.length - beforeDrain, 3, "one drain sends every ready batch");
+
+    const beforeShutdown = requestBodies.length;
+    for (let i = 0; i < AUDIT_LIMITS.maxBatchEvents * 2; i++) {
+      audit({ event: "shutdown.sample", sandboxId: "shutdown-test", attributes: { index: i } });
+    }
+    await drainAudit(Number.POSITIVE_INFINITY, Date.now() + AUDIT_LIMITS.shutdownDrainMs);
+    assert.equal(requestBodies.length - beforeShutdown, 2, "shutdown drain empties the queue");
 
     const beforeOversized = requests;
     audit({ event: "oversized.sample", sandboxId: "large", attributes: { value: "x".repeat(AUDIT_LIMITS.maxBatchBytes + 1024) } });
