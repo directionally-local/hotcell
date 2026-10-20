@@ -93,6 +93,8 @@ Set these before `hotcell start` (they're inherited by the daemon) or on `hotcel
 | `HOTCELL_ALLOWED_HOSTS` | — | Extra `Host` values accepted by the API (DNS-rebinding guard; loopback always allowed) |
 | `HOTCELL_MAX_BODY_BYTES` | `33554432` | Max request body size before 413 (REST + egress) |
 | `HOTCELL_LOG_LEVEL` / `HOTCELL_LOG_FORMAT` | `info` / `pretty` | Logging (`json` for ingestion) |
-| `HOTCELL_OTLP_ENDPOINT` | — | OTLP/HTTP traces export (e.g. `http://localhost:4318`) |
+| `HOTCELL_OTLP_ENDPOINT` | — | Shared OTLP/HTTP traces and audit logs endpoint (e.g. `http://localhost:4318`) |
+| `HOTCELL_OTLP_HEADERS` | — | Optional JSON headers shared by OTLP exporters |
+| `HOTCELL_OTEL_ENDPOINT` / `HOTCELL_OTEL_HEADERS` | — | Legacy audit-only endpoint/header overrides |
 
 SDK/CLI endpoint: `HOTCELL_ENDPOINT` (default `http://127.0.0.1:4750`).

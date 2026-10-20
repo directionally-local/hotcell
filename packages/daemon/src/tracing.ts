@@ -1,5 +1,17 @@
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { log } from "./logger.js";
+
+const HOST_NAME = hostname();
+const SERVICE_VERSION: string = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown };
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
 
 /**
  * Minimal, dependency-free distributed tracing — the Phase 2 "OpenTelemetry
@@ -40,10 +52,11 @@ export interface Span {
 interface TracerConfig {
   serviceName: string;
   otlpEndpoint: string;
+  headers: Record<string, string>;
   ringSize: number;
 }
 
-let cfg: TracerConfig = { serviceName: "sbd", otlpEndpoint: "", ringSize: 200 };
+let cfg: TracerConfig = { serviceName: "hotcell", otlpEndpoint: "", headers: {}, ringSize: 200 };
 const ring: SpanData[] = [];
 let exportQueue: SpanData[] = [];
 let flushTimer: NodeJS.Timeout | undefined;
@@ -143,7 +156,7 @@ async function flush(): Promise<void> {
   try {
     const res = await fetch(`${cfg.otlpEndpoint}/v1/traces`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...cfg.headers },
       body: JSON.stringify(toOtlp(batch, cfg.serviceName)),
     });
     if (!res.ok) throw new Error(`status ${res.status}`);
@@ -161,11 +174,13 @@ function toOtlp(spans: SpanData[], serviceName: string) {
         resource: {
           attributes: [
             { key: "service.name", value: { stringValue: serviceName } },
+            { key: "service.version", value: { stringValue: SERVICE_VERSION } },
+            { key: "host.name", value: { stringValue: HOST_NAME } },
           ],
         },
         scopeSpans: [
           {
-            scope: { name: "hotcell", version: "0.1.0" },
+            scope: { name: "hotcell", version: SERVICE_VERSION },
             spans: spans.map((s) => ({
               traceId: s.traceId,
               spanId: s.spanId,
