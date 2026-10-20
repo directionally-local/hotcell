@@ -101,6 +101,12 @@ export class DriverRouter implements Driver {
     const d = this.instance(this.defaultName);
     if (typeof d.initEgress === "function") await d.initEgress();
   }
+  /** Resolve an enforced-container source address to its persisted sandbox identity. */
+  async resolveEgressSourceIp(ip: string): Promise<{ sandboxId: string; driver: string } | undefined> {
+    const d = this.instance("container");
+    const sandboxId = await d.sandboxIdForEgressIp?.(ip);
+    return sandboxId ? { sandboxId, driver: d.name } : undefined;
+  }
   destroy(id: string): Promise<void> {
     return this.forId(id).destroy(id);
   }

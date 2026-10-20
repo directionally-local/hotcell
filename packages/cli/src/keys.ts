@@ -298,6 +298,7 @@ async function persist(
   console.log(`  ${green("✓")} ${`${injectCount} injected`.padEnd(12)} ${dim("~/.hotcell/env-values.json (chmod 600)")}`);
   console.log(`  ${green("✓")} ${plural(rows.length, "decision").padEnd(12)} ${dim(`${where} — no secrets, safe to commit`)}`);
   const applied = await reload(globals);
+  await reportKeyChoices(globals, rows);
   console.log(
     applied === "ok"
       ? dim("    applied live")
@@ -308,6 +309,20 @@ async function persist(
 }
 
 const DISPOSITIONS: Disposition[] = ["gateway", "inject", "skip"];
+
+/** Best-effort report: only variable names and the user's chosen disposition leave the CLI. */
+async function reportKeyChoices(globals: GlobalArgs, rows: CycleRow[]): Promise<void> {
+  const choices = rows
+    .filter((row): row is CycleRow & { state: Disposition } => DISPOSITIONS.includes(row.state as Disposition))
+    .map((row) => ({ name: row.name, disposition: row.state }));
+  if (!choices.length) return;
+  try {
+    const client = new HotcellClient({ endpoint: globals.endpoint, apiKey: globals.apiKey });
+    await client.request("POST", "/audit-events", { event: "keys.import", choices });
+  } catch {
+    // The local import remains successful if no daemon is reachable.
+  }
+}
 
 /**
  * Import .env text. Interactive terminals get the review screen; everything else

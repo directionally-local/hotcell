@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { audit } from "../audit.js";
 import type { Duplex } from "node:stream";
 import { type BackupInfo, BackupRegistry } from "../backups.js";
 import { previewUrl, type Config } from "../config.js";
@@ -550,6 +551,7 @@ async function handle(
   if (method === "DELETE" && egressTokenIdMatch) {
     if (!store.get(egressTokenIdMatch[1])) return sendJson(res, 404, { error: "not found" });
     const removed = store.removeEgressToken(egressTokenIdMatch[2]);
+    if (removed) audit({ event: "gateway.token.revoked", sandboxId: egressTokenIdMatch[1], driver: store.get(egressTokenIdMatch[1])?.driver ?? driver.name, attributes: { "token.raw": egressTokenIdMatch[2] } });
     if (!removed) return sendJson(res, 404, { error: "token not found" });
     return sendJson(res, 200, { token: egressTokenIdMatch[2], revoked: true });
   }
@@ -564,6 +566,7 @@ async function handle(
       if ("error" in parsed) return sendJson(res, 400, { error: parsed.error });
       const token = SandboxStore.newEgressToken();
       store.addEgressToken(token, id, parsed.policy);
+      audit({ event: "gateway.token.minted", sandboxId: id, driver: store.get(id)?.driver ?? driver.name, attributes: { "token.raw": token, providers: (parsed.policy.providers ?? []).join(",") } });
       return sendJson(res, 201, {
         token,
         policy: parsed.policy,
@@ -597,6 +600,27 @@ async function handle(
   if (method === "POST" && path === "/reload-keys") {
     const r = deps.reloadKeys?.() ?? { providers: 0 };
     return sendJson(res, 200, { ok: true, ...r });
+  }
+
+  if (method === "POST" && path === "/audit-events") {
+    const body = await readJson(req, config.maxBodyBytes);
+    if (body.event !== "keys.import" || !Array.isArray(body.choices) || body.choices.length > 500) {
+      return sendJson(res, 400, { error: "invalid audit event payload" });
+    }
+    const choices = body.choices as unknown[];
+    if (!choices.every((choice) => {
+      if (!choice || typeof choice !== "object") return false;
+      const item = choice as Record<string, unknown>;
+      return typeof item.name === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)
+        && (item.disposition === "gateway" || item.disposition === "inject" || item.disposition === "skip");
+    })) return sendJson(res, 400, { error: "invalid key import choice" });
+    const safeChoices = choices as { name: string; disposition: "gateway" | "inject" | "skip" }[];
+    audit({ event: "keys.import", driver: driver.name, attributes: {
+      "key.count": safeChoices.length,
+      "key.names": safeChoices.map((item) => item.name).join(","),
+      "key.dispositions": safeChoices.map((item) => `${item.name}=${item.disposition}`).join(","),
+    } });
+    return sendJson(res, 202, { accepted: true });
   }
 
   // Recent finished spans, for debugging and the trace view. Newest first.
@@ -860,6 +884,7 @@ async function handle(
       const record = store.get(id);
       if (!record) return sendJson(res, 404, { error: "not found" });
       await driver.destroy(id);
+      audit({ event: "sandbox.destroy", sandboxId: id, driver: record.driver ?? driver.name, attributes: { image: record.image } });
       store.remove(id);
       store.clearSandbox(id);
       deps.history?.clear(id);
@@ -868,6 +893,19 @@ async function handle(
   }
 
   sendJson(res, 404, { error: `no route for ${method} ${path}` });
+}
+
+function safeRepoForAudit(repo: string): string {
+  return repo.replace(/:\/\/[^/@]+@/g, "://").split(/[?#]/, 1)[0]?.slice(0, 512) ?? "";
+}
+
+function safeCommandForAudit(command: string): string {
+  return command
+    .replace(/\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g, "[REDACTED]")
+    .replace(/(https?:\/\/)[^/@\s]+@/gi, "$1[REDACTED]@")
+    .slice(0, 512);
 }
 
 async function createSandbox(
@@ -919,7 +957,10 @@ async function createSandbox(
     ok: true as const,
     release: () => {},
   };
-  if (!admitted.ok) return sendCapacityRefusal(res, admitted.reason);
+  if (!admitted.ok) {
+    audit({ event: "sandbox.admission_denied", sandboxId: id, driver: driverName, attributes: { image, memoryMb: limits.memoryMb ?? 0, cpus: limits.cpus ?? 0, status: 503, reason: admitted.reason.slice(0, 256) } });
+    return sendCapacityRefusal(res, admitted.reason);
+  }
 
   // Egress wiring. `egress: true` (or a policy object) opts the sandbox's LLM SDKs
   // into the gateway (provider base-URL + key env). Independently, when egress
@@ -999,6 +1040,7 @@ async function createSandbox(
     usage: emptyUsage(),
   };
   store.add(record);
+  audit({ event: "sandbox.create", sandboxId: id, driver: driverName, attributes: { image, repo: repo ? safeRepoForAudit(repo) : "", branch: (repoRef ?? branchRaw ?? "").slice(0, 256), memoryMb: limits.memoryMb ?? 0, cpus: limits.cpus ?? 0 } });
   if (egressToken) store.addEgressToken(egressToken, id, egressPolicy);
 
   const provision = () =>
@@ -1045,6 +1087,7 @@ async function createSandbox(
     r.statusReason = undefined;
     r.lastActivityAt = new Date().toISOString();
     store.add(r);
+    audit({ event: "sandbox.start", sandboxId: id, driver: r.driver ?? driver.name });
     return r;
   };
   const finishFail = async (err: unknown, keepRecord: boolean): Promise<void> => {
@@ -1100,7 +1143,8 @@ async function stopSandbox(
   // Processes and exposed ports die with the container; sessions persist.
   store.clearRuntimeState(id);
   record.status = "stopped";
-  store.add(record); // write-through the status change
+  store.add(record);
+  audit({ event: "sandbox.stop", sandboxId: id, driver: record.driver ?? driver.name }); // write-through the status change
   sendJson(res, 200, record);
 }
 
@@ -1507,9 +1551,14 @@ async function execInSandbox(
   // The stream is live work: the reaper must see this sandbox as active for
   // the whole run, not just the instant the request arrived.
   store.beginExec(id);
+  const execStartedAt = Date.now();
+  let auditExitCode = 1;
   const stopKeepalive = startSseKeepalive(res);
   try {
-    await driver.exec(id, runCommand, { cwd, env }, write);
+    await driver.exec(id, runCommand, { cwd, env }, (event) => {
+      if (event.type === "exit") auditExitCode = event.exitCode;
+      write(event);
+    });
     if (session && cwdFile) {
       try {
         const next = (await driver.readFile(id, { path: cwdFile })).trim();
@@ -1526,6 +1575,7 @@ async function execInSandbox(
     write({ type: "exit", exitCode: 1 });
   } finally {
     stopKeepalive();
+    audit({ event: "sandbox.exec", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: safeCommandForAudit(command), cwd: cwd ?? "", exitCode: auditExitCode, durationMs: Date.now() - execStartedAt } });
     store.endExec(id);
     res.end();
   }
@@ -1664,6 +1714,7 @@ async function startProcess(
       logPath,
     };
     store.addProcess(id, proc);
+    audit({ event: "sandbox.process.start", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: safeCommandForAudit(command), cwd: opts.cwd ?? "", procId } });
     return sendJson(res, 201, proc);
   } catch (err) {
     return sendJson(res, 500, { error: errorMessage(err) });

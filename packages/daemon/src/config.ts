@@ -303,6 +303,12 @@ export interface Config {
    * are always kept in-memory for `GET /traces` regardless.
    */
   otlpEndpoint: string;
+  /** OTLP/HTTP endpoint for audit logs; empty disables export. */
+  auditOtlpEndpoint: string;
+  /** OTLP/HTTP headers encoded as a JSON object. */
+  auditOtlpHeaders: Record<string, string>;
+  /** Local append-only JSONL audit log path; empty disables local persistence. */
+  auditPath: string;
   /** How many of the most recent metric samples per sandbox to retain in memory. */
   metricsHistory: number;
   /** How many of the most recent finished spans to retain in memory for `/traces`. */
@@ -394,6 +400,9 @@ export function loadConfig(): Config {
     logFormat: env("LOG_FORMAT") === "json" ? "json" : "pretty",
     apiKey: env("API_KEY") ?? "",
     otlpEndpoint: (env("OTLP_ENDPOINT") ?? "").replace(/\/$/, ""),
+    auditOtlpEndpoint: (env("OTEL_ENDPOINT") ?? "").replace(/\/$/, ""),
+    auditOtlpHeaders: parseHeaders(env("OTEL_HEADERS")),
+    auditPath: env("AUDIT_FILE") ?? join(stateRoot(), "audit.jsonl"),
     metricsHistory: Number(env("METRICS_HISTORY") ?? 60),
     traceRing: Number(env("TRACE_RING") ?? 200),
     maxBodyBytes: Number(env("MAX_BODY_BYTES") ?? 32 * 1024 * 1024),
@@ -445,6 +454,18 @@ export function loadProviderConfigs(): Record<string, ProviderConfig> {
   }
   }
   return out;
+}
+
+function parseHeaders(value: string | undefined): Record<string, string> {
+  if (!value) return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch {
+    console.error("[hotcell] ignoring malformed HOTCELL_OTEL_HEADERS (expected JSON object)");
+    return {};
+  }
 }
 
 function parseLogLevel(value: string | undefined): LogLevel {

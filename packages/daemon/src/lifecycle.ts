@@ -1,4 +1,5 @@
 import { CapacityError, type Capacity } from "./capacity.js";
+import { audit } from "./audit.js";
 import type { Driver } from "./driver/types.js";
 import { log } from "./logger.js";
 import type { SandboxStore } from "./store.js";
@@ -35,6 +36,7 @@ export async function pauseSandbox(
   driver: Driver,
   store: SandboxStore,
   record: SandboxRecord,
+  automatic = false,
 ): Promise<void> {
   let hibernated = false;
   if (typeof driver.snapshot === "function" && (driver.canSnapshot?.(record.id) ?? true)) {
@@ -54,6 +56,7 @@ export async function pauseSandbox(
   }
   record.status = "paused";
   store.add(record);
+  audit({ event: "sandbox.pause", sandboxId: record.id, driver: record.driver ?? driver.name, attributes: { automatic } });
 }
 
 /**
@@ -68,6 +71,7 @@ export async function resumeSandbox(
   record: SandboxRecord,
   capacity?: Capacity,
 ): Promise<void> {
+  const previousStatus = record.status;
   // Reserve the sandbox's memory for the duration of the start: once the record
   // is written back as `running` it's counted by the meter itself, so the
   // pending reservation is released synchronously after the status write.
@@ -93,6 +97,7 @@ export async function resumeSandbox(
   record.status = "running";
   record.lastActivityAt = new Date().toISOString();
   store.add(record);
+  audit({ event: previousStatus === "stopped" ? "sandbox.start" : "sandbox.resume", sandboxId: record.id, driver: record.driver ?? driver.name });
   admitted.release();
 }
 
@@ -123,7 +128,7 @@ export async function reapIdle(
     if ((hasService || hasLiveProcs) && !driver.canSnapshot?.(record.id)) continue;
     if (now - Date.parse(record.lastActivityAt) < record.sleepAfterMs) continue;
     try {
-      await pauseSandbox(driver, store, record);
+      await pauseSandbox(driver, store, record, true);
       paused.push(record.id);
     } catch (err) {
       log.warn("reaper failed to pause sandbox", { sandbox: record.id, error: String(err) });

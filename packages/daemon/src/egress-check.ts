@@ -10,6 +10,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { createServer as netCreateServer } from "node:net";
 import assert from "node:assert/strict";
 import { buildProviders, createEgressProxy } from "./proxy/egress.js";
+import { parseEgressFirewallDrop } from "./net/firewall.js";
 import { proxyEnvWanted } from "./api/server.js";
 import { Allowlist } from "./proxy/allowlist.js";
 import { DEFAULT_MODEL_PRICES } from "./pricing.js";
@@ -109,6 +110,16 @@ async function main(): Promise<void> {
     passed++;
     console.log(`  ✓ ${label}`);
   };
+
+  // 0) Parse the per-packet kernel log emitted before an enforced DROP.
+  {
+    assert.deepEqual(
+      parseEgressFirewallDrop("6,102,3456000,-;HOTCELL_EGRESS_DROP IN=br-test OUT=eth0 SRC=10.200.0.9 DST=203.0.113.8 LEN=60 PROTO=TCP SPT=42000 DPT=443 SYN"),
+      { sourceIp: "10.200.0.9", destinationIp: "203.0.113.8", protocol: "tcp", port: 443 },
+    );
+    assert.equal(parseEgressFirewallDrop("6,103,3457000,-;ordinary kernel message"), undefined);
+    ok("default-deny firewall log parser extracts source, destination, protocol, and port");
+  }
 
   // 1) Key injection: upstream sees the REAL key, never the token.
   {

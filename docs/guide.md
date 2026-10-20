@@ -97,7 +97,7 @@ sandbox.destroy()
 - **Resource limits** — hard per-sandbox **memory / CPU / PID** caps (cgroups), per create or as daemon-wide defaults, so one sandbox can't starve the rest.
 - **Capacity + admission** — tracks committed memory vs the host budget (auto-detected) and **refuses to over-subscribe** (`create` → 503 when full). Usage-based: idle agents pack densely, busy ones reserve what they use.
 - **Metrics + cost** — per-sandbox CPU/mem/net/pids, integrated usage, and a configurable `$` cost meter (LLM cost folded in), with history sparklines in the dashboard.
-- **Observability** — structured JSON/pretty logs and OpenTelemetry traces (one span per request; optional OTLP/HTTP export, or `GET /traces`).
+- **Observability + audit** — structured logs and OpenTelemetry traces; per-sandbox audit events are written by default to `~/.hotcell/audit.jsonl` and can also be sent as OTLP/HTTP logs to Beacon or your SIEM (`HOTCELL_OTEL_ENDPOINT`, optional JSON `HOTCELL_OTEL_HEADERS`). Secret values and raw gateway tokens are never recorded.
 - **Live terminal** — a real interactive shell (xterm.js) per sandbox in the dashboard, or `hotcell terminal <id>`.
 - **Auth** — optional API key (`HOTCELL_API_KEY`) on the REST API, honored by both SDKs, the CLI, and the dashboard.
 
@@ -108,3 +108,14 @@ Open <http://127.0.0.1:4750/> after `hotcell start` — sandbox list, live CPU/m
 ## From a source checkout
 
 `npm run smoke` exercises the whole surface end-to-end against live Docker; `npm run smoke:py` does the same through the Python SDK; `npm run check:egress` unit-tests the egress control plane (no Docker); `npm run smoke:remote` drives a live remote daemon via the SDK.
+
+### Send Hotcell audit events to Beacon or your SIEM
+
+Hotcell writes sandbox lifecycle, exec/process, admission-refusal, outbound egress decisions, gateway calls/policy denials/spend caps, token lifecycle, and `keys import` choices to `~/.hotcell/audit.jsonl` by default. Key-import events contain variable names and dispositions only—never values. To export OTLP/HTTP logs as well, configure the collector endpoint (base URL; `/v1/logs` is appended) and optional headers:
+
+```bash
+HOTCELL_OTEL_ENDPOINT=http://127.0.0.1:4318 \
+HOTCELL_OTEL_HEADERS='{"Authorization":"Bearer …"}' hotcelld
+```
+
+The local JSONL path can be changed with `HOTCELL_AUDIT_FILE`; set it to an empty string to disable local persistence. Export is batched, best-effort, and time-bounded. Events include `schema_version`, timestamp, sandbox ID, driver, host, and hashed token IDs. Command text is redacted for common credential patterns and capped at 512 characters. On Linux, the default-deny firewall logs new blocked flows before dropping them; Hotcell maps the source container IP to its sandbox and records the destination IP, port, protocol, and rule. Logging is rate-limited (20 records/second) to protect the host. Reading kernel records uses `/dev/kmsg`, with a `journalctl` fallback; if neither is accessible, firewall enforcement still works but those host-level drop events are unavailable.
