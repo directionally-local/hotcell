@@ -30,6 +30,10 @@ export const AUDIT_LIMITS = {
   maxBatchEvents: 128,
   maxBatchBytes: 512 * 1024,
   maxAttempts: 3,
+  /** Batches sent back to back per timer tick, so a busy daemon keeps up. */
+  maxBatchesPerTick: 16,
+  /** Upper bound on how long shutdown waits for the queue to drain. */
+  shutdownDrainMs: 10_000,
 } as const;
 
 const HOST_NAME = hostname();
@@ -46,13 +50,13 @@ let cfg: AuditConfig = { path: "", endpoint: "", headers: {} };
 let queue: PendingAudit[] = [];
 let timer: NodeJS.Timeout | undefined;
 let writes = Promise.resolve();
-let flushInFlight: Promise<void> | undefined;
+let flushInFlight: Promise<boolean> | undefined;
 let lastQueueWarningAt = 0;
 
 export function configureAudit(config: AuditConfig): void {
   cfg = config;
   if (cfg.endpoint && !timer) {
-    timer = setInterval(() => void flushAudit(), 3000);
+    timer = setInterval(() => void drainAudit(AUDIT_LIMITS.maxBatchesPerTick), 3000);
     timer.unref?.();
   }
 }
@@ -138,26 +142,40 @@ export function buildOtlpLogsPayload(entries: Record<string, unknown>[]) {
 export async function stopAudit(): Promise<void> {
   if (timer) clearInterval(timer);
   timer = undefined;
-  await flushAudit();
+  await drainAudit(Number.POSITIVE_INFINITY, Date.now() + AUDIT_LIMITS.shutdownDrainMs);
   await writes;
 }
 
-/** Flush at most one bounded batch. Failures are retried a limited number of times. */
-export async function flushAudit(): Promise<void> {
+/**
+ * Send ready batches back to back until the queue has nothing ready, a send fails,
+ * `maxBatches` is reached or `deadline` passes. Failed batches wait for their backoff.
+ */
+export async function drainAudit(maxBatches: number, deadline = Number.POSITIVE_INFINITY): Promise<void> {
+  for (let sent = 0; sent < maxBatches && Date.now() < deadline; sent++) {
+    if (!cfg.endpoint || !queue.some((item) => item.nextAttemptAt <= Date.now())) return;
+    if (!(await flushAudit())) return;
+  }
+}
+
+/**
+ * Flush at most one bounded batch. Failures are retried a limited number of times.
+ * Resolves false when the send failed.
+ */
+export async function flushAudit(): Promise<boolean> {
   if (flushInFlight) return flushInFlight;
-  if (!cfg.endpoint || !queue.length) return;
+  if (!cfg.endpoint || !queue.length) return true;
   const operation = deliverOneBatch();
   flushInFlight = operation;
   try {
-    await operation;
+    return await operation;
   } finally {
     if (flushInFlight === operation) flushInFlight = undefined;
   }
 }
 
-async function deliverOneBatch(): Promise<void> {
+async function deliverOneBatch(): Promise<boolean> {
   const batch = takeBatch();
-  if (batch.length === 0) return;
+  if (batch.length === 0) return true;
   try {
     const response = await fetch(cfg.endpoint + "/v1/logs", {
       method: "POST",
@@ -166,6 +184,7 @@ async function deliverOneBatch(): Promise<void> {
       body: JSON.stringify(buildOtlpLogsPayload(batch.map((item) => item.entry))),
     });
     if (!response.ok) throw new Error("status " + response.status);
+    return true;
   } catch (err) {
     const now = Date.now();
     let dropped = 0;
@@ -181,6 +200,7 @@ async function deliverOneBatch(): Promise<void> {
     log.warn("audit OTLP export failed", {
       error: String(err), events: batch.length, retrying: batch.length - dropped, dropped,
     });
+    return false;
   }
 }
 
@@ -275,7 +295,7 @@ export function redactCommandForAudit(command: string): string {
     .replace(/((?:^|\s)(?:-H|--header)(?:\s+|=))(["'])(?:authorization|x-api-key)\s*:[\s\S]*?\2/gi, "$1$2[REDACTED]$2")
     .replace(/((?:^|\s)(?:-H|--header)(?:\s+|=))(authorization|x-api-key)\s*:\s*(?:bearer\s+)?[^\s"';&|]+/gi, "$1$2: [REDACTED]")
     .replace(/((?:^|\s)(?:--token|--api[-_]?key|--secret|--password|--auth)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
-    .replace(/((?:^|\s)(?:-u|--user)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
+    .replace(/((?:^|\s)(?:-u|--user)(?:=|\s+))(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s;&|:'"]*:[^\s;&|]+)/gi, "$1[REDACTED]")
     .replace(/(authorization\s*:\s*bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
     .replace(/(x-api-key\s*:\s*)[^\s"']+/gi, "$1[REDACTED]")
     .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b/g, "[REDACTED]")
