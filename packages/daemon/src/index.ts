@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { get as httpGet } from "node:http";
 import { BackupRegistry } from "./backups.js";
+import { configureAudit, stopAudit } from "./audit.js";
 import { Capacity } from "./capacity.js";
 import { BootScheduler } from "./boot-scheduler.js";
 import { loadConfig, loadProviderConfigs } from "./config.js";
@@ -54,6 +55,7 @@ function reportPortInUse(host: string, port: number): void {
 async function main(): Promise<void> {
   const config = loadConfig();
   configureLogger({ level: config.logLevel, format: config.logFormat });
+  configureAudit({ path: config.auditPath, endpoint: config.auditOtlpEndpoint, headers: config.auditOtlpHeaders });
   configureTracing({
     serviceName: "sbd",
     otlpEndpoint: config.otlpEndpoint,
@@ -134,6 +136,7 @@ async function main(): Promise<void> {
       image: config.defaultImage,
       auth: config.apiKey ? "on" : "off",
       otlp: config.otlpEndpoint || "off",
+      auditOtlp: config.auditOtlpEndpoint || "off",
     });
   });
 
@@ -231,6 +234,7 @@ async function main(): Promise<void> {
     failsafe.unref();
     await driver.shutdown().catch(() => {}); // tear down the VZ warm pool, if any
     stopTracing();
+    await stopAudit();
     egress?.close();
     egress?.closeAllConnections();
     proxy.close();

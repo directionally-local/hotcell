@@ -1,4 +1,5 @@
 import { CapacityError, type Capacity } from "./capacity.js";
+import { audit } from "./audit.js";
 import type { Driver } from "./driver/types.js";
 import { log } from "./logger.js";
 import type { SandboxStore } from "./store.js";
@@ -54,6 +55,7 @@ export async function pauseSandbox(
   }
   record.status = "paused";
   store.add(record);
+  audit({ event: "sandbox.pause", sandboxId: record.id, driver: record.driver ?? driver.name, attributes: { automatic: true } });
 }
 
 /**
@@ -93,6 +95,7 @@ export async function resumeSandbox(
   record.status = "running";
   record.lastActivityAt = new Date().toISOString();
   store.add(record);
+  audit({ event: "sandbox.resume", sandboxId: record.id, driver: record.driver ?? driver.name });
   admitted.release();
 }
 
