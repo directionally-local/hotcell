@@ -602,6 +602,27 @@ async function handle(
     return sendJson(res, 200, { ok: true, ...r });
   }
 
+  if (method === "POST" && path === "/audit-events") {
+    const body = await readJson(req, config.maxBodyBytes);
+    if (body.event !== "keys.import" || !Array.isArray(body.choices) || body.choices.length > 500) {
+      return sendJson(res, 400, { error: "invalid audit event payload" });
+    }
+    const choices = body.choices as unknown[];
+    if (!choices.every((choice) => {
+      if (!choice || typeof choice !== "object") return false;
+      const item = choice as Record<string, unknown>;
+      return typeof item.name === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)
+        && (item.disposition === "gateway" || item.disposition === "inject" || item.disposition === "skip");
+    })) return sendJson(res, 400, { error: "invalid key import choice" });
+    const safeChoices = choices as { name: string; disposition: "gateway" | "inject" | "skip" }[];
+    audit({ event: "keys.import", driver: driver.name, attributes: {
+      "key.count": safeChoices.length,
+      "key.names": safeChoices.map((item) => item.name).join(","),
+      "key.dispositions": safeChoices.map((item) => `${item.name}=${item.disposition}`).join(","),
+    } });
+    return sendJson(res, 202, { accepted: true });
+  }
+
   // Recent finished spans, for debugging and the trace view. Newest first.
   if (method === "GET" && path === "/traces") {
     const limit = Number(url.searchParams.get("limit") ?? "100") || 100;
@@ -874,6 +895,19 @@ async function handle(
   sendJson(res, 404, { error: `no route for ${method} ${path}` });
 }
 
+function safeRepoForAudit(repo: string): string {
+  return repo.replace(/:\/\/[^/@]+@/g, "://").split(/[?#]/, 1)[0]?.slice(0, 512) ?? "";
+}
+
+function safeCommandForAudit(command: string): string {
+  return command
+    .replace(/\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g, "[REDACTED]")
+    .replace(/(https?:\/\/)[^/@\s]+@/gi, "$1[REDACTED]@")
+    .slice(0, 512);
+}
+
 async function createSandbox(
   res: ServerResponse,
   { config, driver, store, capacity, bootScheduler }: Pick<Deps, "config" | "driver" | "store" | "capacity" | "bootScheduler">,
@@ -923,7 +957,10 @@ async function createSandbox(
     ok: true as const,
     release: () => {},
   };
-  if (!admitted.ok) return sendCapacityRefusal(res, admitted.reason);
+  if (!admitted.ok) {
+    audit({ event: "sandbox.admission_denied", sandboxId: id, driver: driverName, attributes: { image, memoryMb: limits.memoryMb ?? 0, cpus: limits.cpus ?? 0, status: 503, reason: admitted.reason.slice(0, 256) } });
+    return sendCapacityRefusal(res, admitted.reason);
+  }
 
   // Egress wiring. `egress: true` (or a policy object) opts the sandbox's LLM SDKs
   // into the gateway (provider base-URL + key env). Independently, when egress
@@ -1003,7 +1040,7 @@ async function createSandbox(
     usage: emptyUsage(),
   };
   store.add(record);
-  audit({ event: "sandbox.create", sandboxId: id, driver: driverName, attributes: { image, repo: repo ?? "", branch: repoRef ?? branchRaw ?? "", memoryMb: limits.memoryMb ?? 0, cpus: limits.cpus ?? 0 } });
+  audit({ event: "sandbox.create", sandboxId: id, driver: driverName, attributes: { image, repo: repo ? safeRepoForAudit(repo) : "", branch: (repoRef ?? branchRaw ?? "").slice(0, 256), memoryMb: limits.memoryMb ?? 0, cpus: limits.cpus ?? 0 } });
   if (egressToken) store.addEgressToken(egressToken, id, egressPolicy);
 
   const provision = () =>
@@ -1127,7 +1164,6 @@ async function startSandbox(
     if (err instanceof CapacityError) return sendCapacityRefusal(res, err.reason);
     throw err;
   }
-  audit({ event: "sandbox.resume", sandboxId: id, driver: record.driver ?? driver.name });
   sendJson(res, 200, record);
 }
 
@@ -1539,7 +1575,7 @@ async function execInSandbox(
     write({ type: "exit", exitCode: 1 });
   } finally {
     stopKeepalive();
-    audit({ event: "sandbox.exec", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: command.slice(0, 512), cwd: cwd ?? "", exitCode: auditExitCode, durationMs: Date.now() - execStartedAt } });
+    audit({ event: "sandbox.exec", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: safeCommandForAudit(command), cwd: cwd ?? "", exitCode: auditExitCode, durationMs: Date.now() - execStartedAt } });
     store.endExec(id);
     res.end();
   }
@@ -1678,6 +1714,7 @@ async function startProcess(
       logPath,
     };
     store.addProcess(id, proc);
+    audit({ event: "sandbox.process.start", sandboxId: id, driver: record.driver ?? driver.name, attributes: { command: safeCommandForAudit(command), cwd: opts.cwd ?? "", procId } });
     return sendJson(res, 201, proc);
   } catch (err) {
     return sendJson(res, 500, { error: errorMessage(err) });

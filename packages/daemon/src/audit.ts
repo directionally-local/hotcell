@@ -27,7 +27,11 @@ export function configureAudit(config: AuditConfig): void {
 
 /** Emit one best-effort local JSONL event and, when configured, queue it for OTLP. */
 export function audit(event: AuditEvent): void {
+  const safeAttributes = Object.fromEntries(
+    Object.entries(event.attributes ?? {}).filter(([key]) => key !== "token.raw"),
+  );
   const entry = {
+    ...safeAttributes,
     timestamp: new Date().toISOString(),
     schema_version: "1.0",
     event: event.event,
@@ -37,7 +41,6 @@ export function audit(event: AuditEvent): void {
       : undefined,
     driver: event.driver ?? "",
     host: hostname(),
-    ...Object.fromEntries(Object.entries(event.attributes ?? {}).filter(([key]) => key !== "token.raw")),
   };
   if (cfg.path) {
     writes = writes.then(async () => {
@@ -67,6 +70,7 @@ async function flush(): Promise<void> {
     const response = await fetch(`${cfg.endpoint}/v1/logs`, {
       method: "POST",
       headers: { "content-type": "application/json", ...cfg.headers },
+      signal: AbortSignal.timeout(5000),
       body: JSON.stringify({ resourceLogs: [{ resource: { attributes: [
         { key: "service.name", value: { stringValue: "hotcell" } },
       ] }, scopeLogs: [{ scope: { name: "hotcell.audit", version: "1.0" }, logRecords: batch.map((entry) => ({

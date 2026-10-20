@@ -111,11 +111,11 @@ Open <http://127.0.0.1:4750/> after `hotcell start` — sandbox list, live CPU/m
 
 ### Send Hotcell audit events to Beacon or your SIEM
 
-Hotcell writes lifecycle, exec, admission-refusal, and gateway-token events to `~/.hotcell/audit.jsonl` by default. To export OTLP/HTTP logs as well, configure the collector endpoint (base URL; `/v1/logs` is appended) and optional headers:
+Hotcell writes sandbox lifecycle, exec/process, admission-refusal, outbound egress decisions, gateway calls/policy denials/spend caps, token lifecycle, and `keys import` choices to `~/.hotcell/audit.jsonl` by default. Key-import events contain variable names and dispositions only—never values. To export OTLP/HTTP logs as well, configure the collector endpoint (base URL; `/v1/logs` is appended) and optional headers:
 
 ```bash
 HOTCELL_OTEL_ENDPOINT=http://127.0.0.1:4318 \
 HOTCELL_OTEL_HEADERS='{"Authorization":"Bearer …"}' hotcelld
 ```
 
-The local JSONL path can be changed with `HOTCELL_AUDIT_FILE`; set it to an empty string to disable local persistence. Export is batched and best-effort. Events include `schema_version`, timestamp, sandbox ID, driver, host, and hashed token IDs; exec commands are truncated to 512 characters. Never put secrets in command arguments.
+The local JSONL path can be changed with `HOTCELL_AUDIT_FILE`; set it to an empty string to disable local persistence. Export is batched, best-effort, and time-bounded. Events include `schema_version`, timestamp, sandbox ID, driver, host, and hashed token IDs. Command text is redacted for common credential patterns and capped at 512 characters. Kernel-level default-deny firewall drops that never reach the egress proxy are not individually observable in this release.

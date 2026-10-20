@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
 import type { Config } from "../config.js";
+import { audit } from "../audit.js";
 import { log } from "../logger.js";
 import { computeModelCost, type ModelPrices } from "../pricing.js";
 import type { SandboxStore } from "../store.js";
@@ -274,18 +275,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
 
   // --- policy enforcement (cheapest, most-decisive checks first) -----------
   if (policy.expiresAt && now > Date.parse(policy.expiresAt)) {
+    audit({ event: "gateway.token.expired", sandboxId, driver: store.get(sandboxId)?.driver, attributes: { "token.raw": token, provider: providerName, status: 403 } });
     return sendText(res, 403, "egress token expired");
   }
   if (policy.providers && !policy.providers.includes(providerName)) {
+    audit({ event: "gateway.policy.rejected", sandboxId, driver: store.get(sandboxId)?.driver, attributes: { "token.raw": token, provider: providerName, reason: "provider_scope", status: 403 } });
     return sendText(res, 403, `provider not in token scope: ${providerName}`);
   }
   if (policy.spendCapUsd !== undefined && record.spendUsd >= policy.spendCapUsd) {
+    audit({ event: "gateway.policy.rejected", sandboxId, driver: store.get(sandboxId)?.driver, attributes: { "token.raw": token, provider: providerName, reason: "token_spend_cap", status: 402, spendUsd: record.spendUsd, spendCapUsd: policy.spendCapUsd } });
     return sendText(res, 402, "egress spend cap exceeded (token)");
   }
   // Per-sandbox ceiling: a hard cap across ALL of the sandbox's tokens, so an
   // abused token can't exceed it even before it's revoked.
   const sb = store.get(sandboxId);
   if (sb?.egressSpendCapUsd && sb.usage.providerCost >= sb.egressSpendCapUsd) {
+    audit({ event: "gateway.policy.rejected", sandboxId, driver: sb.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, reason: "sandbox_spend_cap", status: 402, spendUsd: sb.usage.providerCost, spendCapUsd: sb.egressSpendCapUsd } });
     return sendText(res, 402, "egress spend cap exceeded (sandbox)");
   }
 
@@ -307,6 +312,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
   // is rejected.
   const reqModel = reqBody ? parseModel(reqBody) : undefined;
   if (policy.models && reqModel && !matchModel(policy.models, reqModel)) {
+    audit({ event: "gateway.policy.rejected", sandboxId, driver: sb?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: reqModel.slice(0, 128), reason: "model_scope", status: 403 } });
     return sendText(res, 403, `model not allowed: ${reqModel}`);
   }
 
@@ -316,11 +322,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
     const tok = deps.limiter!.checkTokens(token, policy.rateLimit, now);
     if (!tok.ok) {
       res.setHeader("retry-after", Math.ceil(tok.retryAfterMs / 1000));
+      audit({ event: "gateway.policy.rejected", sandboxId, driver: sb?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, reason: "token_rate_limit", status: 429 } });
       return sendText(res, 429, "egress rate limit (tokens) exceeded");
     }
     const call = deps.limiter!.allow(token, policy.rateLimit, now);
     if (!call.ok) {
       res.setHeader("retry-after", Math.ceil(call.retryAfterMs / 1000));
+      audit({ event: "gateway.policy.rejected", sandboxId, driver: sb?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, reason: "call_rate_limit", status: 429 } });
       return sendText(res, 429, "egress rate limit (calls) exceeded");
     }
   }
@@ -388,9 +396,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
   const cost =
     reportedCost > 0 ? reportedCost : computeModelCost(model, tokensIn, tokensOut, deps.prices ?? {});
 
+  const previousTokenSpend = record.spendUsd;
+  const previousSandboxSpend = sb?.usage.providerCost ?? 0;
   store.addProviderUsage(sandboxId, { bytes, tokensIn, tokensOut, cost });
   if (cost > 0) store.addEgressTokenSpend(token, cost);
   if (policy.rateLimit) deps.limiter!.note(token, policy.rateLimit, tokensIn + tokensOut, now);
+  const updatedSandbox = store.get(sandboxId);
+  const updatedToken = store.resolveEgressTokenFull(token);
+  audit({ event: "gateway.call", sandboxId, driver: updatedSandbox?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: model?.slice(0, 128) ?? "", status: upstream.status, tokensIn, tokensOut, cost } });
+  if (policy.spendCapUsd !== undefined && previousTokenSpend < policy.spendCapUsd && (updatedToken?.spendUsd ?? previousTokenSpend) >= policy.spendCapUsd) {
+    audit({ event: "gateway.spend_cap_reached", sandboxId, driver: updatedSandbox?.driver ?? undefined, attributes: { "token.raw": token, scope: "token", spendUsd: updatedToken?.spendUsd ?? previousTokenSpend, spendCapUsd: policy.spendCapUsd } });
+  }
+  if (updatedSandbox?.egressSpendCapUsd && previousSandboxSpend < updatedSandbox.egressSpendCapUsd && updatedSandbox.usage.providerCost >= updatedSandbox.egressSpendCapUsd) {
+    audit({ event: "gateway.spend_cap_reached", sandboxId, driver: updatedSandbox.driver ?? undefined, attributes: { "token.raw": token, scope: "sandbox", spendUsd: updatedSandbox.usage.providerCost, spendCapUsd: updatedSandbox.egressSpendCapUsd } });
+  }
   span
     .setAttribute("http.status_code", upstream.status)
     .setAttribute("egress.tokens_in", tokensIn)
@@ -513,11 +532,13 @@ async function handleForwardHttp(
   }
   if (deps.providerHosts.has(host)) {
     log.warn("egress forward denied: LLM provider host", { sandbox: rec.sandboxId, host });
+    audit({ event: "egress.connection.denied", sandboxId: rec.sandboxId, driver: deps.store.get(rec.sandboxId)?.driver, attributes: { host, port: Number(target.port) || (target.protocol === "https:" ? 443 : 80), rule: "provider_gateway_required", protocol: target.protocol } });
     return sendText(res, 403, `direct egress to LLM provider blocked: ${host} — use the gateway path`);
   }
   const decision = deps.allowlist.check(host);
   if (!decision.allow) {
     log.warn("egress forward denied", { sandbox: rec.sandboxId, host, reason: decision.reason });
+    audit({ event: "egress.connection.denied", sandboxId: rec.sandboxId, driver: deps.store.get(rec.sandboxId)?.driver, attributes: { host, port: Number(target.port) || (target.protocol === "https:" ? 443 : 80), rule: decision.reason, protocol: target.protocol } });
     return sendText(res, 403, `egress to ${host} denied (${decision.reason})`);
   }
 
@@ -572,6 +593,7 @@ async function handleForwardHttp(
   }
   res.end();
   deps.store.addEgress(rec.sandboxId, bytes);
+  audit({ event: "egress.connection.allowed", sandboxId: rec.sandboxId, driver: deps.store.get(rec.sandboxId)?.driver, attributes: { host, port: Number(target.port) || (target.protocol === "https:" ? 443 : 80), rule: decision.reason, protocol: target.protocol, method, status: upstream.status, bytes } });
   log.info("egress forward", { sandbox: rec.sandboxId, host, status: upstream.status, bytes });
 }
 
@@ -606,12 +628,14 @@ async function handleConnect(
   // never re-open a key-bypass tunnel to an LLM provider.
   if (deps.providerHosts.has(nhost)) {
     log.warn("egress CONNECT denied: LLM provider host", { sandbox: rec.sandboxId, host: nhost });
+    audit({ event: "egress.connection.denied", sandboxId: rec.sandboxId, driver: deps.store.get(rec.sandboxId)?.driver, attributes: { host: nhost, port, rule: "provider_gateway_required", protocol: "connect" } });
     clientSocket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     return;
   }
   const decision = deps.allowlist.check(nhost);
   if (!decision.allow) {
     log.warn("egress CONNECT denied", { sandbox: rec.sandboxId, host: nhost, reason: decision.reason });
+    audit({ event: "egress.connection.denied", sandboxId: rec.sandboxId, driver: deps.store.get(rec.sandboxId)?.driver, attributes: { host: nhost, port, rule: decision.reason, protocol: "connect" } });
     clientSocket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     return;
   }
@@ -636,6 +660,7 @@ async function handleConnect(
     upstream.on("data", (c: Buffer) => (bytes += c.length));
     clientSocket.pipe(upstream);
     upstream.pipe(clientSocket);
+    audit({ event: "egress.connection.allowed", sandboxId: rec.sandboxId, driver: deps.store.get(rec.sandboxId)?.driver, attributes: { host: nhost, port, rule: decision.reason, protocol: "connect" } });
     log.info("egress CONNECT", { sandbox: rec.sandboxId, host: nhost, port });
   });
   upstream.on("error", () => {
