@@ -116,9 +116,7 @@ async function main(): Promise<number> {
     ok("env applied + session cwd persists");
 
     // 6. Background process + port readiness + preview proxy fetch.
-    const proc = await sandbox.startProcess(
-      "while true; do printf 'HTTP/1.0 200 OK\\r\\n\\r\\nmvm-preview-ok' | nc -l -p 9000 2>/dev/null; done",
-    );
+    const proc = await sandbox.startProcess(httpServerCommand(9000, "mvm-preview-ok"));
     assert(Number.isFinite(proc.pid), "startProcess returned no pid");
     const ready = await sandbox.waitForPort(9000, { timeoutMs: 8000 });
     assert(ready, "port 9000 never became ready");
@@ -171,9 +169,7 @@ async function main(): Promise<number> {
     //     server survive, and an inbound preview request transparently WAKES the
     //     paused sandbox (what lets the reaper hibernate port-exposing sandboxes).
     const survivor = await sandbox.startProcess("while true; do sleep 1; done");
-    await sandbox.startProcess(
-      "while true; do printf 'HTTP/1.0 200 OK\\r\\n\\r\\nwake-ok' | nc -l -p 9100 2>/dev/null; done",
-    );
+    await sandbox.startProcess(httpServerCommand(9100, "wake-ok"));
     assert(await sandbox.waitForPort(9100, { timeoutMs: 8000 }), "port 9100 never ready");
     await sandbox.exposePort(9100);
     await sandbox.pause();
@@ -200,3 +196,16 @@ async function main(): Promise<number> {
 }
 
 main().then((code) => process.exit(code));
+
+/**
+ * A shell one-liner serving `body` over HTTP on `port` with whatever the image has:
+ * busybox nc (the Alpine base) or python3 (hotcell-base and other Debian images,
+ * which ship no nc).
+ */
+function httpServerCommand(port: number, body: string): string {
+  const dir = `/tmp/http-${port}`;
+  return (
+    `if command -v nc >/dev/null; then while true; do printf 'HTTP/1.0 200 OK\\r\\n\\r\\n${body}' | nc -l -p ${port} 2>/dev/null; done; ` +
+    `else mkdir -p ${dir} && printf '${body}' > ${dir}/index.html && cd ${dir} && exec python3 -m http.server ${port}; fi`
+  );
+}
