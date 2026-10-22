@@ -23,7 +23,7 @@ const CURATED: BaseImage[] = [
     has: "python + node + git + build tools",
     use: "the default — mixed stacks & coding agents",
   },
-  { image: "node:20", has: "node + npm + git", use: "JS/TS + most agent CLIs (npm i -g …)" },
+  { image: "node:22", has: "node + npm + git", use: "JS/TS + most agent CLIs (npm i -g …)" },
   { image: "python:3.11", has: "python3 + pip + git + build tools", use: "Python projects (non-slim = has git)" },
   { image: "mcr.microsoft.com/devcontainers/base:ubuntu", has: "ubuntu + git + tools (no runtimes)", use: "bring your own languages" },
   { image: "python:3.11-slim", has: "python3 + pip only", use: "minimal / CI (no git, no node)" },

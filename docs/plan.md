@@ -87,7 +87,7 @@ One self-contained control-plane daemon per host, a tiny in-sandbox agent, and t
 /sdk/typescript     npm package (mirrors Cloudflare surface)
 /sdk/python         pip package
 /web                React dashboard (embedded via go:embed)
-/images             base sandbox OCI image (Python 3.11, Node 20, git, bash)
+/images             base sandbox OCI image (Python 3.11, Node 22, git, bash)
 ```
 
 ---

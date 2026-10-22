@@ -68,7 +68,7 @@ Environment variables (`packages/daemon/src/config.ts`):
 | `sdk/python/` | Python client SDK (`hotcell-sdk`, package `hotcell`). Stdlib-only; mirrors the TS surface, snake_cased. Outside `packages/*` so it's not an npm workspace. |
 | `agent/` | **Go module** (`github.com/sinameraji/hotcell/agent`) for the in-sandbox `hotcell-agent` — the vsock RPC agent the Phase 3 microVM drivers (Firecracker/Apple VZ) use in place of `docker exec`. Separate `go.mod`, outside the npm workspaces. `proto/` = wire protocol, `server/` = transport-agnostic handlers, `cmd/hotcell-agent/` = entrypoint + transports. Dev: `npm run test:agent` (tests run on macOS over net.Pipe/unix, no vsock); ship: `npm run build:agent` (static `linux/{amd64,arm64}`). Only dep: `golang.org/x/sys` (for `AF_VSOCK`). See `agent/README.md`. |
 | `packages/cli/` | `hotcell` CLI. Commands: `run`, `ls`, `rm`. Uses `@hotcell/sdk` to talk to the daemon. |
-| `images/base/` | OCI image definition for the richer sandbox workspace (Python 3.11 + Node 20 + git/bash). |
+| `images/base/` | OCI image definition for the richer sandbox workspace (Python 3.11 + Node 22 + git/bash). |
 | `docs/plan.md` | Long-form product/architecture spec and phased build plan. |
 | `tsconfig.base.json` | Shared strict TypeScript config extended by every workspace. |
 
