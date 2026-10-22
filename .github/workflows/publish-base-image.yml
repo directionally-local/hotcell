@@ -3,6 +3,12 @@
 # Manual trigger: Actions tab → "publish base image" → Run workflow (on main).
 # Uses the built-in GITHUB_TOKEN — no secrets to configure.
 #
+# Every run publishes hotcell-base:node<major> (plus a sha tag), then runs the
+# container smoke test against that exact tag. `latest` (the daemon's default
+# image) only moves when `promote_latest` is ticked and the smoke test passed, so
+# a new Node line can be tried under its own tag first. Older lines stay
+# pullable as hotcell-base:node<major> for anyone who pins one.
+#
 # ONE-TIME after the first successful run: make the package public so anyone can
 # pull it — your avatar → Packages → hotcell-base → Package settings → Change
 # visibility → Public. Then `--image ghcr.io/sinameraji/hotcell-base` works anywhere.
@@ -11,14 +17,28 @@ name: publish base image
 on:
   workflow_dispatch:
     inputs:
+      node_major:
+        description: "Node major line to install"
+        required: true
+        default: "22"
+        type: choice
+        options: ["22", "24", "20"]
+      promote_latest:
+        description: "Also move :latest to this image after the smoke test passes"
+        required: false
+        default: false
+        type: boolean
       extra_tag:
-        description: "Optional extra tag besides latest (e.g. 2026-07-19)"
+        description: "Optional extra tag (e.g. 2026-07-19)"
         required: false
         default: ""
 
 permissions:
   contents: read
   packages: write # push to GHCR via GITHUB_TOKEN
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/hotcell-base
 
 jobs:
   build-push:
@@ -36,18 +56,62 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/hotcell-base
+          images: ${{ env.IMAGE }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=node${{ inputs.node_major }}
             type=raw,value=${{ inputs.extra_tag }},enable=${{ inputs.extra_tag != '' }}
-            type=sha,format=short
+            type=sha,format=short,suffix=-node${{ inputs.node_major }}
       - uses: docker/build-push-action@v6
         with:
           context: images/base
           file: images/base/Dockerfile
           platforms: linux/amd64,linux/arm64
+          build-args: NODE_MAJOR=${{ inputs.node_major }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=node${{ inputs.node_major }}
+          cache-to: type=gha,mode=max,scope=node${{ inputs.node_major }}
+
+  smoke:
+    needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      HOTCELL_IMAGE: ghcr.io/${{ github.repository_owner }}/hotcell-base:node${{ inputs.node_major }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: image ships the requested Node line
+        run: |
+          docker pull "$HOTCELL_IMAGE"
+          version=$(docker run --rm --entrypoint node "$HOTCELL_IMAGE" --version)
+          echo "node $version"
+          case "$version" in v${{ inputs.node_major }}.*) ;; *) echo "expected Node ${{ inputs.node_major }}.x"; exit 1 ;; esac
+          docker run --rm --entrypoint sh "$HOTCELL_IMAGE" -c 'git --version && python3 --version && npm --version && rg --version | head -1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: container smoke against this image (real Docker, end-to-end)
+        run: npm run smoke
+
+  promote:
+    needs: smoke
+    if: ${{ inputs.promote_latest }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: point :latest at node${{ inputs.node_major }}
+        run: docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:node${{ inputs.node_major }}"

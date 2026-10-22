@@ -35,14 +35,14 @@ export async function createWizard(globals: GlobalArgs): Promise<number> {
       hint: configuredDefault ? "as configured in setup" : "git + node + python — the default",
     },
     { label: "python:3.11-slim", hint: "minimal (no git/node)" },
-    { label: "node:20", hint: "node + git (no python)" },
+    { label: "node:22", hint: "node + git (no python)" },
     { label: "custom…" },
   ]);
   if (img < 0) {
     out.write(`  ${c.dim}cancelled${c.reset}\n`);
     return 0;
   }
-  const IMAGES = [undefined, "python:3.11-slim", "node:20"] as const;
+  const IMAGES = [undefined, "python:3.11-slim", "node:22"] as const;
   let image = img < 3 ? IMAGES[img] : await textInput("image", "");
   if (image) {
     flags.image = image;

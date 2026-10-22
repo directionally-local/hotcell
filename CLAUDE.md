@@ -35,7 +35,7 @@ Three workspaces plus a base image, layered client → daemon → driver → Doc
 - **`packages/daemon`** (`@hotcell/daemon`, bin `hotcelld`) — control plane. Hand-rolled `node:http` REST server (`src/api/server.ts`), `SandboxStore` (`src/store.ts`, embedded SQLite via `node:sqlite` with a write-through in-memory cache — survives daemon restart), and the runtime-driver layer.
 - **`packages/sdk`** (`@hotcell/sdk`) — zero-runtime-dependency TS client mirroring the Cloudflare Sandbox SDK surface (`HotcellClient.getSandbox`, `Sandbox.exec`/`execStream`/`writeFile`/`readFile`/`mkdir`/`listFiles`/`destroy`). Keep it dependency-free.
 - **`packages/cli`** (`@hotcell/cli`, bin `hotcell`) — `hotcell run | ls | rm | files`, built on `@hotcell/sdk`.
-- **`images/base`** — richer OCI image (Python 3.11 + Node 20 + git/bash); build it and set `HOTCELL_IMAGE=hotcell/base:latest` to use it.
+- **`images/base`** — richer OCI image (Python 3.11 + Node 22 + git/bash); build it and set `HOTCELL_IMAGE=hotcell/base:latest` to use it.
 
 **The central abstraction is the `Driver` interface** (`packages/daemon/src/driver/types.ts`): `create / exec / writeFile / readFile / mkdir / listFiles / destroy / ping`. The only implementation today is `ContainerDriver` (`src/driver/container.ts`), which keeps a long-lived Docker container alive (`sleep infinity`) and `exec`s into it on demand. Future microVM drivers implement this same surface so the daemon, SDK, and CLI stay unchanged. **When adding a sandbox capability, add it to the `Driver` interface first, then the container impl, then expose it through REST → SDK → CLI** (that layering is the existing pattern; see how file ops were added across all four).
 

@@ -99,7 +99,7 @@ export interface Config {
    * Default OCI image for new sandboxes. Defaults to a small Debian-based
    * Python image (ships /bin/bash + python3) so the vertical slice works with
    * zero local image builds. Build images/base and set SBX_IMAGE=sbx/base:latest
-   * for the richer toolset (Node 20, git, ripgrep, …).
+   * for the richer toolset (Node 22, git, ripgrep, …).
    */
   defaultImage: string;
   /**
