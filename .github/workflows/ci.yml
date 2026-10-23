@@ -26,6 +26,8 @@ jobs:
       - run: npm run build
       - name: agent unit tests
         run: npm run test:agent
+      - name: secrets-at-rest file modes (config.json, state.db)
+        run: npm run check:filemodes
       - name: firecracker host-agnostic checks
         run: npm run check:fc
       - name: agent protocol check (VM-free, unix socket)
@@ -56,6 +58,8 @@ jobs:
       - run: npm run build
       - name: agent unit tests
         run: npm run test:agent
+      - name: secrets-at-rest file modes (config.json, state.db)
+        run: npm run check:filemodes
       - name: firecracker host-agnostic checks
         run: npm run check:fc
       - name: agent protocol check (VM-free, unix socket)

@@ -26,6 +26,7 @@
     "check:router": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/router-check.js",
     "check:warmpool": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/warmpool-check.js",
     "check:fc": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/fc-check.js",
+    "check:filemodes": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/filemodes-check.js",
     "check:netreconcile": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/net-reconcile-check.js",
     "smoke:vz": "npm run build && node packages/daemon/dist/smoke-microvm.js",
     "smoke:fc:full": "npm run build && SBX_SMOKE_DRIVER=firecracker node packages/daemon/dist/smoke-microvm.js",
