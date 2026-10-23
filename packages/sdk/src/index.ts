@@ -230,8 +230,10 @@ export interface CreateOptions {
   /**
    * Opt-in outbound networking for a microVM sandbox (Firecracker): give the
    * guest a real NAT'd NIC instead of the default no-network-device posture.
-   * For trusted workloads that need general internet (apt/git/pip). The default
-   * (false) keeps the hardened posture: no NIC, egress only over the gateway.
+   * For trusted workloads that need general internet (apt/git/pip): raw sockets
+   * bypass the gateway's allowlist and logging. Host services and cloud metadata
+   * stay firewalled off. The default (false) keeps the hardened posture: no NIC,
+   * egress only over the gateway.
    */
   networked?: boolean;
   /** Hard memory cap in MiB (overrides the daemon default; 0 = unlimited). */

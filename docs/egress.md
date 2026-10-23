@@ -112,4 +112,6 @@ HOTCELL_EGRESS_ENFORCE=true hotcell start
 | microVM, opt-in NAT NIC (`networked: true`) | **Advisory** | proxy env points tools at the gateway; a raw socket bypasses it, unlogged |
 | Container on macOS (Docker Desktop) | **Advisory** | host firewall can't be installed (bridge lives in a VM); proxy env still set |
 
+**`networked: true` is a trusted mode.** It gives a Firecracker guest a real NAT'd NIC, so code in it can open raw sockets to any internet host, and to anything else routable from the host's default-route interface (your LAN / VPC). Use it only for workloads you would run on the host anyway. The driver does fence off the worst targets with per-TAP host firewall rules: the guest can't reach host-local services (all input from its TAP is dropped, including via the TAP gateway IP), can't reach the cloud instance-metadata service (`169.254.0.0/16` is dropped, and IPv6 is disabled on the TAP), and can't be routed into other sandboxes' TAPs or local bridges. Teardown removes every rule it added.
+
 It's an LLM gateway (base-URL rewrite + key injection), not a TLS-MITM proxy — no CA to install in any sandbox. Exposed through REST (`POST/GET /sandboxes/:id/egress-tokens`, `DELETE …/:token`), both SDKs, and the CLI; `npm run check:egress` verifies the whole surface (policy, cost, providers, allowlist, fail-closed) with no Docker required.

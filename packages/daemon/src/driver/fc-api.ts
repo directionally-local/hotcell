@@ -257,3 +257,93 @@ export function fcVsockConnect(
     });
   });
 }
+
+/** One iptables rule a networked sandbox's TAP needs (pure data; see {@link fcTapSetupCommands}). */
+export interface FcTapRule {
+  table: "filter" | "nat";
+  chain: string;
+  /** `insert` = top of the chain (guards that must win over any earlier ACCEPT); `append` = end. */
+  position: "insert" | "append";
+  /** Match + target, e.g. `["-i", "hct2", "-j", "DROP"]`. */
+  spec: string[];
+}
+
+/**
+ * The host firewall rules for a networked (`networked: true`) Firecracker
+ * sandbox's TAP, in install order. The guest gets NAT'd internet out of the
+ * default-route interface `ext` and nothing else:
+ *
+ * - **INPUT drop on the TAP**: the guest never needs a host-local service. Its
+ *   eth0 is configured statically by the kernel `ip=` param (no DHCP), DNS goes
+ *   to public resolvers (forwarded, not the gateway), and the egress gateway is
+ *   reached over vsock through the in-guest loopback relay — so without this,
+ *   the TAP gateway IP (or any other host address) would expose every host
+ *   service bound on 0.0.0.0 to code in the VM.
+ * - **FORWARD drop to 169.254.0.0/16**: the cloud instance-metadata service
+ *   (GCE/AWS/Azure `169.254.169.254`) hands out the host's credentials and
+ *   routes out of `ext`, so the generic ACCEPT below would otherwise let it through.
+ * - **FORWARD drop to anything but `ext`**: no routing into other sandboxes'
+ *   TAPs or local bridges (docker0, …) even when the FORWARD policy is ACCEPT.
+ *
+ * Guards are inserted at the top of their chain so no earlier ACCEPT (Docker,
+ * ufw, …) can shadow them. Teardown deletes exactly this list
+ * ({@link fcTapTeardownCommands}), so setup and teardown stay symmetric.
+ */
+export function fcTapRules(tap: string, ext: string, subnet: string): FcTapRule[] {
+  return [
+    { table: "filter", chain: "INPUT", position: "insert", spec: ["-i", tap, "-j", "DROP"] },
+    { table: "filter", chain: "FORWARD", position: "insert", spec: ["-i", tap, "-d", "169.254.0.0/16", "-j", "DROP"] },
+    { table: "filter", chain: "FORWARD", position: "insert", spec: ["-i", tap, "!", "-o", ext, "-j", "DROP"] },
+    { table: "nat", chain: "POSTROUTING", position: "append", spec: ["-s", subnet, "-o", ext, "-j", "MASQUERADE"] },
+    { table: "filter", chain: "FORWARD", position: "append", spec: ["-i", tap, "-o", ext, "-j", "ACCEPT"] },
+    {
+      table: "filter",
+      chain: "FORWARD",
+      position: "append",
+      spec: ["-i", ext, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    },
+  ];
+}
+
+function iptablesPrefix(r: FcTapRule): string {
+  return r.table === "nat" ? "iptables -t nat" : "iptables";
+}
+
+/** The /30 a sandbox's TAP owns, derived from its guest IP (`172.16.N.2` → `172.16.N.0/30`). */
+export function fcTapSubnet(net: FcNetSpec): string {
+  return net.guestIp.replace(/\.\d+$/, ".0") + "/30";
+}
+
+/**
+ * Shell commands (run with `bash -lc`, in order) that create a networked
+ * sandbox's TAP and install {@link fcTapRules}. Each rule is idempotent
+ * (`-C … || -I/-A …`). IPv6 is disabled on the TAP before it comes up, so the
+ * host gets no link-local address the guest could reach host services on (and
+ * nothing IPv6, e.g. AWS's `fd00:ec2::254` metadata, is ever routed for it).
+ */
+export function fcTapSetupCommands(net: FcNetSpec, ext: string): string[] {
+  const tap = net.tap;
+  const cmds = [
+    `ip tuntap add dev ${tap} mode tap 2>/dev/null || true`,
+    `[ ! -d /proc/sys/net/ipv6 ] || sysctl -wq net.ipv6.conf.${tap}.disable_ipv6=1`,
+    `ip addr add ${net.gatewayIp}/30 dev ${tap} 2>/dev/null || true`,
+    `ip link set ${tap} up`,
+    `sysctl -wq net.ipv4.ip_forward=1`,
+  ];
+  for (const r of fcTapRules(tap, ext, fcTapSubnet(net))) {
+    const ipt = iptablesPrefix(r);
+    const spec = r.spec.join(" ");
+    const add = r.position === "insert" ? `${ipt} -I ${r.chain} 1 ${spec}` : `${ipt} -A ${r.chain} ${spec}`;
+    cmds.push(`${ipt} -C ${r.chain} ${spec} 2>/dev/null || ${add}`);
+  }
+  return cmds;
+}
+
+/** Best-effort inverse of {@link fcTapSetupCommands}: delete every rule it added, then the TAP. */
+export function fcTapTeardownCommands(net: FcNetSpec, ext: string): string[] {
+  const cmds = fcTapRules(net.tap, ext, fcTapSubnet(net)).map(
+    (r) => `${iptablesPrefix(r)} -D ${r.chain} ${r.spec.join(" ")} 2>/dev/null || true`,
+  );
+  cmds.push(`ip link del ${net.tap} 2>/dev/null || true`);
+  return cmds;
+}

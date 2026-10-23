@@ -13,6 +13,8 @@ import {
   FC_DEFAULT_BOOT_ARGS,
   FC_PAUSE_VM,
   FC_START_ACTION,
+  fcTapSetupCommands,
+  fcTapTeardownCommands,
   parseVsockHandshake,
 } from "./driver/fc-api.js";
 import { FirecrackerDriver } from "./driver/firecracker.js";
@@ -121,6 +123,37 @@ async function main(): Promise<void> {
   );
   assert.ok(!buildFcApiCalls({ kernelPath: "/k", rootfsPath: "/r", workspacePath: "/w", vcpus: 1, memMib: 256, vsockUds: "/v" }).some((c) => c.path.includes("network-interfaces")), "no NIC by default");
   ok("opt-in networking: eth0 NIC + kernel ip= autoconfig (none by default)");
+
+  // 2c. Networked TAP firewall: NAT out of the default-route iface only. The
+  // guest must not reach host services (INPUT), cloud metadata (169.254/16) or
+  // other TAPs/bridges, and teardown must delete every rule setup installed.
+  {
+    const net = { tap: "hct7", guestMac: "02:fc:00:00:00:07", guestIp: "172.16.7.2", gatewayIp: "172.16.7.1", mask: "255.255.255.252" };
+    const setup = fcTapSetupCommands(net, "ens4");
+    const teardown = fcTapTeardownCommands(net, "ens4");
+    const idxOf = (re: RegExp) => setup.findIndex((c) => re.test(c));
+    const guardInput = idxOf(/^iptables -C INPUT -i hct7 -j DROP .*\|\| iptables -I INPUT 1 -i hct7 -j DROP$/);
+    const guardMeta = idxOf(/^iptables -C FORWARD -i hct7 -d 169\.254\.0\.0\/16 -j DROP .*\|\| iptables -I FORWARD 1 /);
+    const guardIface = idxOf(/^iptables -C FORWARD -i hct7 ! -o ens4 -j DROP .*\|\| iptables -I FORWARD 1 /);
+    const accept = idxOf(/-A FORWARD -i hct7 -o ens4 -j ACCEPT$/);
+    const masq = idxOf(/^iptables -t nat -C POSTROUTING -s 172\.16\.7\.0\/30 -o ens4 -j MASQUERADE/);
+    const linkUp = idxOf(/^ip link set hct7 up$/);
+    const noV6 = idxOf(/net\.ipv6\.conf\.hct7\.disable_ipv6=1/);
+    for (const [name, i] of Object.entries({ guardInput, guardMeta, guardIface, accept, masq, linkUp, noV6 })) {
+      assert.ok(i >= 0, `setup includes ${name}`);
+    }
+    assert.ok(Math.max(guardInput, guardMeta, guardIface) < Math.min(accept, masq), "guards are installed before the NAT ACCEPT");
+    assert.ok(noV6 < linkUp, "IPv6 is disabled on the TAP before it comes up (no host link-local)");
+    assert.ok(!setup.some((c) => / -A INPUT .* -j ACCEPT/.test(c) || / -I INPUT .* -j ACCEPT/.test(c)), "no INPUT ACCEPT for the TAP");
+    // Teardown symmetry: one -D per rule setup adds, with the identical spec.
+    const added = setup
+      .filter((c) => c.includes(" -C "))
+      .map((c) => c.split(" 2>/dev/null")[0]!.replace(" -C ", " -D "));
+    const deleted = teardown.filter((c) => c.includes(" -D ")).map((c) => c.split(" 2>/dev/null")[0]!);
+    assert.deepEqual(deleted.slice().sort(), added.slice().sort(), "teardown deletes exactly the rules setup added");
+    assert.equal(teardown[teardown.length - 1], "ip link del hct7 2>/dev/null || true", "teardown removes the TAP last");
+    ok("networked TAP firewall: no host INPUT, no 169.254/16, ext-only FORWARD, symmetric teardown");
+  }
 
   // 3. vsock handshake parser: incomplete → null; OK line → split leftover; bad → not ok.
   assert.equal(parseVsockHandshake(Buffer.from("OK 1024")), null, "no newline yet → null");

@@ -28,6 +28,8 @@ import {
   FC_START_ACTION,
   FcApi,
   type FcNetSpec,
+  fcTapSetupCommands,
+  fcTapTeardownCommands,
   fcVsockConnect,
 } from "./fc-api.js";
 import { VzImageCache } from "./vz-image.js";
@@ -347,7 +349,9 @@ export class FirecrackerDriver extends AgentDriver {
   /**
    * Create a host TAP device + masquerade NAT for a networked sandbox and return
    * its `FcNetSpec`. Each sandbox gets a private /30 (gateway .1 = host TAP, guest
-   * .2). Requires the daemon to run with CAP_NET_ADMIN (root). Idempotent per id.
+   * .2). The guest may only go out the default-route interface: no host services,
+   * no cloud metadata, no other TAPs/bridges (see `fcTapRules`). Requires the
+   * daemon to run with CAP_NET_ADMIN (root). Idempotent per id.
    */
   private setupTap(id: string): FcNetSpec {
     const idx = (this.tapSeq++ % 250) + 2; // 2..251, avoids .0/.1 collisions
@@ -360,18 +364,12 @@ export class FirecrackerDriver extends AgentDriver {
       mask: "255.255.255.252",
     };
     const ext = this.defaultRouteIface();
-    const subnet = `172.16.${idx}.0/30`;
     const sh = (cmd: string) => execFileSync("bash", ["-lc", cmd], { stdio: "ignore" });
     try {
-      sh(`ip tuntap add dev ${tap} mode tap 2>/dev/null || true`);
-      sh(`ip addr add ${net.gatewayIp}/30 dev ${tap} 2>/dev/null || true`);
-      sh(`ip link set ${tap} up`);
-      sh(`sysctl -wq net.ipv4.ip_forward=1`);
-      sh(`iptables -t nat -C POSTROUTING -s ${subnet} -o ${ext} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${subnet} -o ${ext} -j MASQUERADE`);
-      sh(`iptables -C FORWARD -i ${tap} -o ${ext} -j ACCEPT 2>/dev/null || iptables -A FORWARD -i ${tap} -o ${ext} -j ACCEPT`);
-      sh(`iptables -C FORWARD -i ${ext} -o ${tap} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i ${ext} -o ${tap} -m state --state RELATED,ESTABLISHED -j ACCEPT`);
+      for (const cmd of fcTapSetupCommands(net, ext)) sh(cmd);
       log.info("firecracker: NAT networking up", { sandbox: id, tap, guestIp: net.guestIp });
     } catch (err) {
+      this.teardownTap(net); // don't strand a half-installed rule set
       throw new Error(`firecracker: TAP/NAT setup failed (needs root/CAP_NET_ADMIN): ${(err as Error).message}`);
     }
     return net;
@@ -380,18 +378,13 @@ export class FirecrackerDriver extends AgentDriver {
   /** Tear down a sandbox's TAP device + NAT rules. Best-effort. */
   private teardownTap(net: FcNetSpec): void {
     const ext = this.defaultRouteIface();
-    const subnet = net.guestIp.replace(/\.\d+$/, ".0") + "/30";
-    const sh = (cmd: string) => {
+    for (const cmd of fcTapTeardownCommands(net, ext)) {
       try {
         execFileSync("bash", ["-lc", cmd], { stdio: "ignore" });
       } catch {
         /* best-effort */
       }
-    };
-    sh(`iptables -t nat -D POSTROUTING -s ${subnet} -o ${ext} -j MASQUERADE 2>/dev/null || true`);
-    sh(`iptables -D FORWARD -i ${net.tap} -o ${ext} -j ACCEPT 2>/dev/null || true`);
-    sh(`iptables -D FORWARD -i ${ext} -o ${net.tap} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true`);
-    sh(`ip link del ${net.tap} 2>/dev/null || true`);
+    }
   }
 
   private _extIface?: string;
