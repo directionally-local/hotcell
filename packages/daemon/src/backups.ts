@@ -12,6 +12,22 @@ export interface BackupInfo {
 }
 
 /**
+ * Backup ids are minted by `SandboxStore.newBackupId()`: 12 lowercase hex chars.
+ * Anything else is rejected before it can reach a filesystem path, so a
+ * client-supplied id (`POST /sandboxes/:id/restore`, `DELETE /backups/:id`)
+ * like `../../etc/x` can never escape the backup dir.
+ */
+const BACKUP_ID_RE = /^[0-9a-f]{12}$/;
+
+export function isValidBackupId(backupId: unknown): backupId is string {
+  return typeof backupId === "string" && BACKUP_ID_RE.test(backupId);
+}
+
+function assertBackupId(backupId: string): void {
+  if (!isValidBackupId(backupId)) throw new Error(`invalid backup id: ${JSON.stringify(String(backupId).slice(0, 64))}`);
+}
+
+/**
  * On-disk registry of workspace backups. Unlike the in-memory `SandboxStore`,
  * backups must survive daemon restarts, so each backup is a `<id>.tar` tarball
  * plus a `<id>.json` metadata sidecar in `dir`; `list` rescans the directory.
@@ -21,10 +37,12 @@ export class BackupRegistry {
 
   /** Host path of a backup's tarball (managed by the driver). */
   tarPath(backupId: string): string {
+    assertBackupId(backupId);
     return join(this.dir, `${backupId}.tar`);
   }
 
   private metaPath(backupId: string): string {
+    assertBackupId(backupId);
     return join(this.dir, `${backupId}.json`);
   }
 
@@ -38,7 +56,9 @@ export class BackupRegistry {
     await writeFile(this.metaPath(info.backupId), JSON.stringify(info, null, 2));
   }
 
+  /** A backup's metadata; `undefined` when unknown or not a well-formed id. */
   async get(backupId: string): Promise<BackupInfo | undefined> {
+    if (!isValidBackupId(backupId)) return undefined;
     try {
       const raw = await readFile(this.metaPath(backupId), "utf8");
       return JSON.parse(raw) as BackupInfo;

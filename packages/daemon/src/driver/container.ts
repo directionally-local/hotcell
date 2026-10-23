@@ -31,6 +31,7 @@ import type {
   TerminalSession,
 } from "./types.js";
 import { shellEscape } from "../util.js";
+import { redactSecrets, safeRepoForLog } from "../audit.js";
 import { log } from "../logger.js";
 
 /**
@@ -296,9 +297,9 @@ export class ContainerDriver implements Driver {
       `cd /workspace && git clone --depth 1 ${refFlag}${shellEscape(repo)}`;
     const { stdout, stderr, exitCode } = await this.execCapture(id, script);
     if (exitCode !== 0) {
-      throw new Error(`git clone failed: ${(stderr || stdout).trim() || `exit ${exitCode}`}`);
+      throw new Error(`git clone failed: ${redactSecrets((stderr || stdout).trim()) || `exit ${exitCode}`}`);
     }
-    log.info("repo cloned", { sandbox: id, repo });
+    log.info("repo cloned", { sandbox: id, repo: safeRepoForLog(repo) });
   }
 
   /**
@@ -310,13 +311,15 @@ export class ContainerDriver implements Driver {
     for (const command of commands) {
       const { stderr, exitCode } = await this.execCapture(id, command);
       if (exitCode === 0) {
-        log.info("setup command ok", { sandbox: id, command });
+        // Setup steps can carry credentials (the gateway-wired git remote embeds
+        // the egress token; user steps may hold PATs): never log them raw.
+        log.info("setup command ok", { sandbox: id, command: redactSecrets(command) });
       } else {
         log.warn("setup command failed (continuing)", {
           sandbox: id,
-          command,
+          command: redactSecrets(command),
           exitCode,
-          stderr: stderr.trim(),
+          stderr: redactSecrets(stderr.trim()),
         });
       }
     }

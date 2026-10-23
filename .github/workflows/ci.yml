@@ -30,6 +30,8 @@ jobs:
         run: npm run check:filemodes
       - name: firecracker host-agnostic checks
         run: npm run check:fc
+      - name: audit + log redaction + backup-id checks (no Docker)
+        run: npm run check:audit
       - name: agent protocol check (VM-free, unix socket)
         run: npm run check:agent
       - name: egress control-plane check (mock upstream)
@@ -62,6 +64,8 @@ jobs:
         run: npm run check:filemodes
       - name: firecracker host-agnostic checks
         run: npm run check:fc
+      - name: audit + log redaction + backup-id checks (no Docker)
+        run: npm run check:audit
       - name: agent protocol check (VM-free, unix socket)
         run: npm run check:agent
       - name: egress control-plane check (mock upstream)
