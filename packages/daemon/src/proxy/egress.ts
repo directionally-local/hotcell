@@ -3,8 +3,9 @@ import { connect as netConnect, type Socket } from "node:net";
 import type { Config } from "../config.js";
 import { audit } from "../audit.js";
 import { log } from "../logger.js";
-import { computeModelCost, type ModelPrices } from "../pricing.js";
+import { computeModelCost, priceFor, type ModelPrice, type ModelPrices } from "../pricing.js";
 import type { SandboxStore } from "../store.js";
+import type { EgressTokenRecord } from "../types.js";
 import { startSpan } from "../tracing.js";
 import { BodyTooLargeError, readBodyCapped, sendJson, sendText } from "../util.js";
 import { Allowlist, loadAllowlist, normalizeHost } from "./allowlist.js";
@@ -143,6 +144,8 @@ interface ResolvedDeps extends Deps {
   allowlist: Allowlist;
   /** Hostnames of known LLM providers — denied on the forward/CONNECT path. */
   providerHosts: Set<string>;
+  /** Worst-case cost of admitted, still-running calls (see the spend-cap admission in `handle`). */
+  reservations: SpendReservations;
 }
 
 /** The egress proxy plus a hot-reload hook for provider keys (see `hotcell keys`). */
@@ -154,6 +157,7 @@ export function createEgressProxy(deps: Deps): EgressServer {
     limiter: deps.limiter ?? new RateLimiter(),
     allowlist: deps.allowlist ?? loadAllowlist(deps.config),
     providerHosts: computeProviderHosts(deps.providers),
+    reservations: new SpendReservations(),
   };
   const server = createServer((req, res) => {
     handle(req, res, resolved).catch((err) => {
@@ -220,6 +224,8 @@ const HOP_RESPONSE = new Set([
   "connection",
 ]);
 const USAGE_PARSE_CAP = 256 * 1024;
+/** Leading response bytes kept for usage parsing (Anthropic's `message_start`). */
+const USAGE_HEAD_CAP = 64 * 1024;
 
 async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedDeps): Promise<void> {
   const { store, providers } = deps;
@@ -306,14 +312,70 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
     throw err;
   }
 
-  // Model allowlist: parse the request's `model` and gate it. A request with no
-  // model field (e.g. embeddings without one) is allowed even when `models` is
-  // set, so non-chat routes aren't broken — only an explicit, disallowed model
-  // is rejected.
-  const reqModel = reqBody ? parseModel(reqBody) : undefined;
-  if (policy.models && reqModel && !matchModel(policy.models, reqModel)) {
-    audit({ event: "gateway.policy.rejected", sandboxId, driver: sb?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: reqModel.slice(0, 128), reason: "model_scope", status: 403 } });
-    return sendText(res, 403, `model not allowed: ${reqModel}`);
+  // Model allowlist: gate every model the call names — the body's `model` and,
+  // on Gemini-native routes (`…/models/<model>:generateContent`), the model in
+  // the URL path, which is the one Gemini actually serves and bills. A request
+  // naming no model (e.g. a file upload) is allowed even when `models` is set, so
+  // non-chat routes aren't broken — only an explicit, disallowed model is rejected.
+  const bodyObj = reqBody ? parseJsonObject(reqBody) : undefined;
+  const bodyModel = typeof bodyObj?.model === "string" ? bodyObj.model : undefined;
+  const pathRoute = parsePathModel(rest);
+  const reqModel = pathRoute?.model ?? bodyModel;
+  if (policy.models) {
+    for (const m of [pathRoute?.model, bodyModel]) {
+      if (m && !matchModel(policy.models, m)) {
+        audit({ event: "gateway.policy.rejected", sandboxId, driver: sb?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: m.slice(0, 128), reason: "model_scope", status: 403 } });
+        return sendText(res, 403, `model not allowed: ${m}`);
+      }
+    }
+  }
+
+  // Spend-cap pricing. When a cap applies (token `spendCapUsd` or sandbox
+  // `egressSpendCapUsd`), every LLM call must have a bounded worst-case cost
+  // that is reserved against the cap BEFORE it is forwarded — the cap is a hard
+  // ceiling, not a check against already-finished calls. So under a cap:
+  //  - an unpriced model is refused (its cost would otherwise meter as $0);
+  //  - the output limit is bounded: an explicit limit above the per-call
+  //    ceiling is clamped, a missing/invalid one on a known generation route is
+  //    set to `egressMaxOutputTokens`;
+  //  - OpenAI chat streaming is made to report usage (`stream_options.include_usage`).
+  // Uncapped calls are forwarded byte-for-byte as before.
+  const prices = deps.prices ?? {};
+  const capped =
+    !NON_LLM_PROVIDERS.has(providerName) &&
+    (policy.spendCapUsd !== undefined || Boolean(sb?.egressSpendCapUsd));
+  let fwdBody = reqBody;
+  let reserveUsd = 0;
+  if (capped) {
+    let changed = false;
+    let maxOut = EGRESS_OUTPUT_TOKEN_CEILING;
+    if (bodyObj) {
+      const bound = boundOutputTokens(bodyObj, rest, providerName, pathRoute?.method, deps.config.egressMaxOutputTokens);
+      maxOut = bound.maxOut;
+      changed = bound.changed;
+      if (bodyObj.stream === true && CHAT_COMPLETIONS.test(rest)) {
+        const so = bodyObj.stream_options;
+        if (!(isPlainObject(so) && so.include_usage === true)) {
+          bodyObj.stream_options = { ...(isPlainObject(so) ? so : {}), include_usage: true };
+          changed = true;
+        }
+      }
+      if (changed) fwdBody = Buffer.from(JSON.stringify(bodyObj));
+    }
+    if (reqModel && !isFreeRoute(rest, pathRoute?.method)) {
+      const price = priceFor(reqModel, prices);
+      if (!isValidPrice(price)) {
+        audit({ event: "gateway.policy.rejected", sandboxId, driver: sb?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: reqModel.slice(0, 128), reason: "unpriced_model", status: 403 } });
+        return sendText(
+          res,
+          403,
+          `model not priced: ${reqModel} — a spend cap applies, so the gateway can only forward models with a known price (add it via HOTCELL_MODEL_PRICES)`,
+        );
+      }
+      // Worst case: every request-body byte is an input token (a byte-level BPE
+      // token is ≥1 byte of text, so this bounds text input) + the bounded output.
+      reserveUsd = ((fwdBody?.length ?? 0) * price.inputPerMTok + maxOut * price.outputPerMTok) / 1e6;
+    }
   }
 
   // Rate limit: check the token budget (read-only) before consuming a call slot,
@@ -333,13 +395,93 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
     }
   }
 
+  // Spend-cap admission: recorded spend + every in-flight reservation + this
+  // call's worst case must fit under each cap. Check and reserve happen in the
+  // same synchronous tick (no await in between), so concurrent calls can't all
+  // pass against the same stale total; the reservation is released — and the
+  // call's actual cost recorded — in the `finally` below.
+  if (reserveUsd > 0) {
+    const tokenCap = policy.spendCapUsd;
+    if (tokenCap !== undefined) {
+      const spent = store.resolveEgressTokenFull(token)?.spendUsd ?? record.spendUsd;
+      const inflight = deps.reservations.forToken(token);
+      if (spent + inflight + reserveUsd > tokenCap + SPEND_EPSILON) {
+        audit({ event: "gateway.policy.rejected", sandboxId, driver: sb?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: reqModel?.slice(0, 128) ?? "", reason: "token_spend_cap", status: 402, spendUsd: spent, inflightUsd: inflight, reserveUsd, spendCapUsd: tokenCap } });
+        return sendText(res, 402, `egress spend cap exceeded (token): ${capDetail(reserveUsd, tokenCap - spent - inflight, tokenCap)}`);
+      }
+    }
+    const sbNow = store.get(sandboxId);
+    const sandboxCap = sbNow?.egressSpendCapUsd;
+    if (sbNow && sandboxCap) {
+      const spent = sbNow.usage.providerCost;
+      const inflight = deps.reservations.forSandbox(sandboxId);
+      if (spent + inflight + reserveUsd > sandboxCap + SPEND_EPSILON) {
+        audit({ event: "gateway.policy.rejected", sandboxId, driver: sbNow.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: reqModel?.slice(0, 128) ?? "", reason: "sandbox_spend_cap", status: 402, spendUsd: spent, inflightUsd: inflight, reserveUsd, spendCapUsd: sandboxCap } });
+        return sendText(res, 402, `egress spend cap exceeded (sandbox): ${capDetail(reserveUsd, sandboxCap - spent - inflight, sandboxCap)}`);
+      }
+    }
+    deps.reservations.add(token, sandboxId, reserveUsd);
+  }
+
+  try {
+    await forwardAndMeter(req, res, deps, {
+      provider,
+      providerName,
+      rest,
+      search: url.search,
+      method,
+      body: fwdBody,
+      token,
+      sandboxId,
+      policy,
+      record,
+      reqModel,
+      reserveUsd,
+      now,
+    });
+  } finally {
+    if (reserveUsd > 0) deps.reservations.release(token, sandboxId, reserveUsd);
+  }
+}
+
+interface ForwardCall {
+  provider: ResolvedProvider;
+  providerName: string;
+  rest: string;
+  search: string;
+  method: string;
+  body: Buffer | undefined;
+  token: string;
+  sandboxId: string;
+  policy: EgressTokenRecord["policy"];
+  record: EgressTokenRecord;
+  reqModel: string | undefined;
+  /** Worst-case cost reserved for this call (0 when no cap applies or it can't be priced). */
+  reserveUsd: number;
+  now: number;
+}
+
+/**
+ * Forward an admitted gateway call upstream, stream the response back, and
+ * record its usage + cost. Runs inside the caller's try/finally that releases
+ * the call's spend reservation, so the actual cost is recorded in the same tick
+ * the reservation is dropped — also when the upstream fails mid-stream.
+ */
+async function forwardAndMeter(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ResolvedDeps,
+  call: ForwardCall,
+): Promise<void> {
+  const { store } = deps;
+  const { provider, providerName, token, sandboxId, policy, record, reqModel, reserveUsd, now } = call;
   store.touch(sandboxId);
   const span = startSpan("egress.provider_call", {
     "sandbox.id": sandboxId,
     "egress.provider": providerName,
   });
 
-  const upstreamUrl = provider.baseUrl.replace(/\/$/, "") + "/" + rest + (url.search || "");
+  const upstreamUrl = provider.baseUrl.replace(/\/$/, "") + "/" + call.rest + (call.search || "");
   const headers = new Headers();
   for (const [k, v] of Object.entries(req.headers)) {
     if (HOP_REQUEST.has(k.toLowerCase()) || v == null) continue;
@@ -347,7 +489,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
   }
   headers.set(provider.authHeader, provider.format(provider.apiKey));
 
-  let bytes = reqBody?.length ?? 0;
+  let bytes = call.body?.length ?? 0;
 
   let upstream: Response;
   try {
@@ -355,7 +497,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
     // a cross-origin hop, so the injected key (x-api-key, x-goog-api-key, custom
     // auth headers) would go to whatever host the Location names. The 3xx is
     // relayed to the sandbox as-is; its client re-requests with its own token.
-    upstream = await fetch(upstreamUrl, { method, headers, body: reqBody, redirect: "manual" });
+    upstream = await fetch(upstreamUrl, { method: call.method, headers, body: call.body, redirect: "manual" });
   } catch (err) {
     span.setStatus("error").end();
     return sendText(res, 502, `upstream fetch failed: ${String(err)}`);
@@ -368,46 +510,95 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
   res.writeHead(upstream.status, respHeaders);
 
   // Stream the response through to the sandbox (so token-by-token streaming still
-  // works) while keeping a rolling TAIL copy to parse usage from — token counts
-  // and the OpenRouter `usage.cost` live in the final chunk (the last SSE frame
-  // for streaming, the end of the body for a JSON response), so the tail, not the
-  // head, is what we need.
+  // works) while keeping a HEAD and a rolling TAIL copy to parse usage from —
+  // Anthropic reports input tokens in the first SSE frame (`message_start`),
+  // while output tokens, the OpenAI/Gemini usage frame and the OpenRouter
+  // `usage.cost` arrive at the end.
+  const head: Buffer[] = [];
+  let headBytes = 0;
   const tail: Buffer[] = [];
   let tailBytes = 0;
+  let truncated = false;
+  let streamError: unknown;
   if (upstream.body) {
     const reader = upstream.body.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const buf = Buffer.from(value);
-      res.write(buf);
-      bytes += buf.length;
-      tail.push(buf);
-      tailBytes += buf.length;
-      while (tail.length > 1 && tailBytes - (tail[0]?.length ?? 0) >= USAGE_PARSE_CAP) {
-        const dropped = tail.shift();
-        tailBytes -= dropped?.length ?? 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const buf = Buffer.from(value);
+        res.write(buf);
+        bytes += buf.length;
+        if (headBytes < USAGE_HEAD_CAP) {
+          head.push(buf);
+          headBytes += buf.length;
+          continue;
+        }
+        tail.push(buf);
+        tailBytes += buf.length;
+        while (tail.length > 1 && tailBytes - (tail[0]?.length ?? 0) >= USAGE_PARSE_CAP) {
+          const dropped = tail.shift();
+          tailBytes -= dropped?.length ?? 0;
+          truncated = true;
+        }
       }
+    } catch (err) {
+      streamError = err;
     }
   }
-  res.end();
+  if (streamError === undefined) res.end();
+  else res.destroy();
 
-  const { tokensIn, tokensOut, cost: reportedCost, model: respModel } = parseUsage(Buffer.concat(tail));
+  const usage = parseUsage(head, tail, truncated);
+  const { tokensIn, tokensOut } = usage;
+  const prices = deps.prices ?? {};
   // Cost: the provider's own figure is authoritative (OpenRouter inlines
-  // `usage.cost`); otherwise compute it from the model price table. Never sum the
-  // two — the result is folded into `providerCost`, keeping one source of truth.
-  const model = respModel ?? reqModel;
-  const cost =
-    reportedCost > 0 ? reportedCost : computeModelCost(model, tokensIn, tokensOut, deps.prices ?? {});
+  // `usage.cost`); otherwise compute it from the model price table (the
+  // provider-echoed model, else the requested one). Never sum the two — the
+  // result is folded into `providerCost`, keeping one source of truth.
+  const model = usage.model ?? reqModel;
+  let cost: number;
+  let priced: boolean;
+  if (usage.cost > 0) {
+    cost = usage.cost;
+    priced = true;
+  } else {
+    const pricedModel = [usage.model, reqModel].find((m) => m !== undefined && isValidPrice(priceFor(m, prices)));
+    priced = pricedModel !== undefined;
+    cost = computeModelCost(pricedModel ?? model, tokensIn, tokensOut, prices);
+  }
+  if (!Number.isFinite(cost) || cost < 0) cost = 0;
+  // Under a cap, an admitted call is never free just because its usage couldn't
+  // be read (no usage frame, a truncated body, an unknown response shape, or a
+  // stream that died mid-way): it is charged its full reservation. Providers
+  // don't bill rejected requests, so a non-2xx response with no usage costs 0.
+  let chargedReservation = false;
+  if (reserveUsd > 0) {
+    const billable = streamError !== undefined || (upstream.status >= 200 && upstream.status < 300);
+    if (billable && (!usage.found || !priced)) {
+      cost = Math.max(cost, reserveUsd);
+      chargedReservation = true;
+      log.warn("egress call usage unreadable under a spend cap — charged its reservation", {
+        sandbox: sandboxId,
+        provider: providerName,
+        model,
+        status: upstream.status,
+        reserveUsd,
+      });
+    } else if (cost > reserveUsd + SPEND_EPSILON) {
+      log.warn("egress call cost exceeded its spend-cap reservation", { sandbox: sandboxId, provider: providerName, model, cost, reserveUsd });
+    }
+  }
 
-  const previousTokenSpend = record.spendUsd;
+  const sb = store.get(sandboxId);
+  const previousTokenSpend = store.resolveEgressTokenFull(token)?.spendUsd ?? record.spendUsd;
   const previousSandboxSpend = sb?.usage.providerCost ?? 0;
   store.addProviderUsage(sandboxId, { bytes, tokensIn, tokensOut, cost });
   if (cost > 0) store.addEgressTokenSpend(token, cost);
   if (policy.rateLimit) deps.limiter!.note(token, policy.rateLimit, tokensIn + tokensOut, now);
   const updatedSandbox = store.get(sandboxId);
   const updatedToken = store.resolveEgressTokenFull(token);
-  audit({ event: "gateway.call", sandboxId, driver: updatedSandbox?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: model?.slice(0, 128) ?? "", status: upstream.status, tokensIn, tokensOut, cost } });
+  audit({ event: "gateway.call", sandboxId, driver: updatedSandbox?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: model?.slice(0, 128) ?? "", status: upstream.status, tokensIn, tokensOut, cost, ...(chargedReservation ? { chargedReservation: true } : {}) } });
   if (policy.spendCapUsd !== undefined && previousTokenSpend < policy.spendCapUsd && (updatedToken?.spendUsd ?? previousTokenSpend) >= policy.spendCapUsd) {
     audit({ event: "gateway.spend_cap_reached", sandboxId, driver: updatedSandbox?.driver ?? undefined, attributes: { "token.raw": token, scope: "token", spendUsd: updatedToken?.spendUsd ?? previousTokenSpend, spendCapUsd: policy.spendCapUsd } });
   }
@@ -420,7 +611,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
     .setAttribute("egress.tokens_out", tokensOut)
     .setAttribute("egress.cost", cost);
   if (model) span.setAttribute("egress.model", model);
-  if (upstream.status >= 500) span.setStatus("error");
+  if (upstream.status >= 500 || streamError !== undefined) span.setStatus("error");
   span.end();
   log.info("egress call", {
     sandbox: sandboxId,
@@ -435,14 +626,208 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
   });
 }
 
-/** Parse the `model` field from a JSON request body (best-effort). */
-function parseModel(body: Buffer): string | undefined {
+// --- spend-cap helpers -------------------------------------------------------
+
+/**
+ * Per-call output-token ceiling under a spend cap: an explicit output limit above
+ * it is clamped down to it in the forwarded body, and a call on a route whose
+ * output limit the gateway can't bound is reserved at it. At or above every
+ * current model's maximum output, so a legitimate request is not cut short.
+ */
+export const EGRESS_OUTPUT_TOKEN_CEILING = 128_000;
+
+/** Float slack for cap comparisons (an exactly-fitting reservation is admitted). */
+const SPEND_EPSILON = 1e-9;
+
+/** Gateway providers that aren't LLMs: never priced, reserved or rewritten. */
+const NON_LLM_PROVIDERS = new Set(["github", "github-git"]);
+
+const CHAT_COMPLETIONS = /(?:^|\/)chat\/completions\/?$/;
+
+/**
+ * In-flight spend: the summed worst-case cost of calls admitted under a cap
+ * and not yet finished, per egress token and per sandbox. In-memory only — a
+ * daemon restart drops in-flight calls along with their reservations.
+ */
+class SpendReservations {
+  private readonly byToken = new Map<string, number>();
+  private readonly bySandbox = new Map<string, number>();
+
+  forToken(token: string): number {
+    return this.byToken.get(token) ?? 0;
+  }
+
+  forSandbox(sandboxId: string): number {
+    return this.bySandbox.get(sandboxId) ?? 0;
+  }
+
+  add(token: string, sandboxId: string, usd: number): void {
+    this.byToken.set(token, this.forToken(token) + usd);
+    this.bySandbox.set(sandboxId, this.forSandbox(sandboxId) + usd);
+  }
+
+  release(token: string, sandboxId: string, usd: number): void {
+    const bump = (m: Map<string, number>, k: string) => {
+      const left = (m.get(k) ?? 0) - usd;
+      if (left > SPEND_EPSILON) m.set(k, left);
+      else m.delete(k);
+    };
+    bump(this.byToken, token);
+    bump(this.bySandbox, sandboxId);
+  }
+}
+
+function capDetail(reserveUsd: number, remainingUsd: number, capUsd: number): string {
+  const usd = (n: number) => `$${Math.max(0, n).toFixed(4)}`;
+  return (
+    `this call could cost up to ${usd(reserveUsd)} (request size + output limit at the model's price) ` +
+    `but only ${usd(remainingUsd)} of the ${usd(capUsd)} cap is left after spent and in-flight calls — ` +
+    `lower max_tokens / shorten the prompt, or raise the cap`
+  );
+}
+
+function isPlainObject(v: unknown): v is Record<string, any> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isValidPrice(p: ModelPrice | undefined): p is ModelPrice {
+  return (
+    p !== undefined &&
+    typeof p.inputPerMTok === "number" &&
+    typeof p.outputPerMTok === "number" &&
+    Number.isFinite(p.inputPerMTok) &&
+    Number.isFinite(p.outputPerMTok) &&
+    p.inputPerMTok >= 0 &&
+    p.outputPerMTok >= 0
+  );
+}
+
+/** Parse a JSON-object request body (best-effort; undefined for anything else). */
+function parseJsonObject(body: Buffer): Record<string, any> | undefined {
   try {
     const o = JSON.parse(body.toString("utf8"));
-    return typeof o?.model === "string" ? o.model : undefined;
+    return isPlainObject(o) ? o : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Gemini-native routes carry the model in the path, not the body:
+ * `v1beta/models/<model>:generateContent` (also `tunedModels/…`, and
+ * `streamGenerateContent`, `countTokens`, `embedContent`, …).
+ */
+function parsePathModel(rest: string): { model: string; method: string } | undefined {
+  let path = rest;
+  try {
+    path = decodeURIComponent(rest);
+  } catch {
+    /* keep the raw path */
+  }
+  const m = path.match(/(?:^|\/)(models|tunedModels)\/([^/:]+):([A-Za-z]+)\/?$/);
+  if (!m) return undefined;
+  return { model: m[1] === "tunedModels" ? `tunedModels/${m[2]}` : m[2]!, method: m[3]! };
+}
+
+/** Token-counting endpoints are free: never reserved or charged. */
+function isFreeRoute(rest: string, pathMethod: string | undefined): boolean {
+  return pathMethod === "countTokens" || /(?:^|\/)count_tokens\/?$/.test(rest);
+}
+
+/** A non-negative integer output limit, or undefined when absent/invalid (`null` = provider default). */
+function limitValue(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return Math.ceil(v);
+  if (typeof v === "string" && /^\s*\d+\s*$/.test(v)) return Number(v.trim());
+  return undefined;
+}
+
+/**
+ * Bound a capped call's output tokens, rewriting `body` in place when needed.
+ * Only the limit field(s) the route's provider honors count: on a known route
+ * (OpenAI-style chat/completions, Responses, Anthropic messages, legacy
+ * completions, Gemini generateContent) a present limit above the ceiling — or
+ * one that isn't a number, e.g. `null` = "provider default" — is rewritten, and
+ * a missing one is set to `defaultMax`. Embeddings produce no output tokens. On
+ * any other route nothing is rewritten and the ceiling is assumed. The result
+ * is multiplied by the number of completions requested (`n`, `best_of`,
+ * `candidateCount`), which providers bill separately.
+ */
+function boundOutputTokens(
+  body: Record<string, any>,
+  rest: string,
+  providerName: string,
+  pathMethod: string | undefined,
+  defaultMax: number,
+): { maxOut: number; changed: boolean } {
+  const dflt = Math.min(EGRESS_OUTPUT_TOKEN_CEILING, Math.max(1, Math.floor(defaultMax) || 8192));
+  const path = rest.replace(/\/+$/, "");
+  let changed = false;
+
+  const geminiConfigs = [body.generationConfig, body.generation_config].filter(isPlainObject);
+  const multiplier = Math.max(
+    1,
+    ...[body.n, body.best_of, ...geminiConfigs.flatMap((g) => [g.candidateCount, g.candidate_count])]
+      .map((v) => limitValue(v) ?? 1),
+  );
+
+  // Where the route's provider reads its output limit from: [object, key] pairs,
+  // plus where to put one when none is given.
+  let fields: Array<[Record<string, any>, string]>;
+  let inject: () => void;
+  if (pathMethod === "embedContent" || pathMethod === "batchEmbedContents" || /(?:^|\/)embeddings$/.test(path)) {
+    return { maxOut: 0, changed: false };
+  } else if (pathMethod === "generateContent" || pathMethod === "streamGenerateContent") {
+    fields = geminiConfigs.flatMap((g): Array<[Record<string, any>, string]> => [
+      [g, "maxOutputTokens"],
+      [g, "max_output_tokens"],
+    ]);
+    inject = () => {
+      const target = geminiConfigs[0] ?? (body.generationConfig = {});
+      target.maxOutputTokens = dflt;
+    };
+  } else if (CHAT_COMPLETIONS.test(path)) {
+    fields = [
+      [body, "max_tokens"],
+      [body, "max_completion_tokens"],
+    ];
+    // OpenAI's reasoning models reject `max_tokens`; OpenAI-compatible
+    // providers universally accept it.
+    inject = () => {
+      body[providerName === "openai" ? "max_completion_tokens" : "max_tokens"] = dflt;
+    };
+  } else if (/(?:^|\/)responses$/.test(path)) {
+    fields = [[body, "max_output_tokens"]];
+    inject = () => {
+      body.max_output_tokens = dflt;
+    };
+  } else if (/(?:^|\/)(?:messages|completions)$/.test(path)) {
+    fields = [[body, "max_tokens"]];
+    inject = () => {
+      body.max_tokens = dflt;
+    };
+  } else {
+    return { maxOut: EGRESS_OUTPUT_TOKEN_CEILING * multiplier, changed: false };
+  }
+
+  let maxOut = -1;
+  for (const [obj, key] of fields) {
+    if (!Object.hasOwn(obj, key)) continue;
+    let v = limitValue(obj[key]);
+    if (v === undefined) {
+      obj[key] = v = dflt;
+      changed = true;
+    } else if (v > EGRESS_OUTPUT_TOKEN_CEILING) {
+      obj[key] = v = EGRESS_OUTPUT_TOKEN_CEILING;
+      changed = true;
+    }
+    maxOut = Math.max(maxOut, v);
+  }
+  if (maxOut < 0) {
+    inject();
+    maxOut = dflt;
+    changed = true;
+  }
+  return { maxOut: maxOut * multiplier, changed };
 }
 
 /**
@@ -689,57 +1074,93 @@ interface ParsedUsage {
   cost: number;
   /** Model echoed by the provider (preferred for pricing); undefined if absent. */
   model?: string;
+  /** Whether any usage report was found at all (vs. a response with none). */
+  found: boolean;
 }
 
 /**
- * Best-effort usage accounting from the provider's response. Reads the `usage`
- * object — token counts (OpenAI `prompt_tokens`/`completion_tokens` or Anthropic
- * `input_tokens`/`output_tokens`), the **authoritative USD cost** OpenRouter
- * reports as `usage.cost`, and the resolved `model` — from a JSON body or the last
- * SSE `data:` frame.
+ * Best-effort usage accounting from the provider's response, read from a JSON
+ * body (object, or Gemini's JSON-array stream) or from SSE `data:` frames:
+ *  - OpenAI / OpenRouter / Anthropic `usage` (`prompt_tokens`/`completion_tokens`
+ *    or `input_tokens`/`output_tokens`, plus Anthropic's separately-reported
+ *    `cache_creation_input_tokens`/`cache_read_input_tokens`, counted as input),
+ *    also when nested as `message.usage` (Anthropic `message_start`) or
+ *    `response.usage` (OpenAI Responses stream `response.completed`);
+ *  - Gemini `usageMetadata` (`promptTokenCount` + `toolUsePromptTokenCount` in,
+ *    `candidatesTokenCount` + `thoughtsTokenCount` out);
+ *  - the **authoritative USD cost** OpenRouter reports as `usage.cost`;
+ *  - the resolved `model` (`model`, or Gemini's `modelVersion`).
+ * Streamed usage is cumulative, so each field keeps the largest value seen
+ * across frames. `truncated` = the middle of the body was dropped, so only the
+ * SSE frames in `head` and `tail` can be read.
  */
-function parseUsage(buf: Buffer): ParsedUsage {
-  const text = buf.toString("utf8");
-  const fromObj = (o: any): ParsedUsage | null => {
-    const u = o?.usage;
-    const model = typeof o?.model === "string" ? o.model : undefined;
-    if (!u) return null;
-    const inn = u.prompt_tokens ?? u.input_tokens;
-    const out = u.completion_tokens ?? u.output_tokens;
-    const cost = u.cost; // OpenRouter: real USD cost, inline in every response
-    if (inn == null && out == null && cost == null) return null;
-    return {
-      tokensIn: Number(inn || 0),
-      tokensOut: Number(out || 0),
-      cost: Number(cost || 0),
-      model,
-    };
-  };
-  try {
-    const whole = fromObj(JSON.parse(text));
-    if (whole) return whole;
-  } catch {
-    // not a single JSON object; fall through to SSE scan
+function parseUsage(head: Buffer[], tail: Buffer[], truncated: boolean): ParsedUsage {
+  const acc: ParsedUsage = { tokensIn: 0, tokensOut: 0, cost: 0, found: false };
+  if (!truncated) {
+    const text = Buffer.concat([...head, ...tail]).toString("utf8");
+    let whole: unknown;
+    let isJson = false;
+    try {
+      whole = JSON.parse(text);
+      isJson = true;
+    } catch {
+      // not a single JSON document; fall through to the SSE scan
+    }
+    if (isJson) {
+      scanUsage(acc, whole);
+      return acc;
+    }
+    scanSse(acc, text);
+    return acc;
   }
-  // SSE: the usage frame and the model often arrive in different frames, so keep
-  // the last seen of each independently.
-  let best: ParsedUsage | null = null;
-  let lastModel: string | undefined;
+  scanSse(acc, Buffer.concat(head).toString("utf8"));
+  scanSse(acc, Buffer.concat(tail).toString("utf8"));
+  return acc;
+}
+
+function scanSse(acc: ParsedUsage, text: string): void {
   for (const line of text.split(/\r?\n/)) {
     const t = line.trim();
     if (!t.startsWith("data:")) continue;
     const payload = t.slice(5).trim();
     if (!payload || payload === "[DONE]") continue;
     try {
-      const o = JSON.parse(payload);
-      if (typeof o?.model === "string") lastModel = o.model;
-      const r = fromObj(o);
-      if (r) best = r;
+      scanUsage(acc, JSON.parse(payload));
     } catch {
-      // skip non-JSON frames
+      // skip non-JSON (or cut-off) frames
     }
   }
-  if (best) return { ...best, model: best.model ?? lastModel };
-  return { tokensIn: 0, tokensOut: 0, cost: 0, model: lastModel };
 }
 
+function scanUsage(acc: ParsedUsage, o: unknown): void {
+  if (Array.isArray(o)) {
+    for (const item of o) scanUsage(acc, item);
+    return;
+  }
+  if (!isPlainObject(o)) return;
+  const model = [o.model, o.modelVersion, o.response?.model, o.message?.model].find((m) => typeof m === "string");
+  if (model) acc.model = model;
+  const u = [o.usage, o.response?.usage, o.message?.usage].find(isPlainObject);
+  if (u) {
+    const inn = u.prompt_tokens ?? u.input_tokens;
+    const out = u.completion_tokens ?? u.output_tokens;
+    if (inn != null || out != null || u.cost != null) {
+      acc.found = true;
+      acc.tokensIn = Math.max(acc.tokensIn, count(inn) + count(u.cache_creation_input_tokens) + count(u.cache_read_input_tokens));
+      acc.tokensOut = Math.max(acc.tokensOut, count(out));
+      acc.cost = Math.max(acc.cost, count(u.cost)); // OpenRouter: real USD cost, inline
+    }
+  }
+  const g = o.usageMetadata;
+  if (isPlainObject(g) && (g.promptTokenCount != null || g.candidatesTokenCount != null || g.totalTokenCount != null)) {
+    acc.found = true;
+    acc.tokensIn = Math.max(acc.tokensIn, count(g.promptTokenCount) + count(g.toolUsePromptTokenCount));
+    acc.tokensOut = Math.max(acc.tokensOut, count(g.candidatesTokenCount) + count(g.thoughtsTokenCount));
+  }
+}
+
+/** A usage figure as a finite, non-negative number (0 for anything else). */
+function count(v: unknown): number {
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}

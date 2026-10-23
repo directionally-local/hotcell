@@ -78,6 +78,7 @@ Set these before `hotcell start` (they're inherited by the daemon) or on `hotcel
 | `HOTCELL_PROVIDER_<NAME>_BASEURL` / `_AUTHHEADER` / `_FORMAT` | — | Define a custom provider (e.g. a Cloudflare AI Gateway); pair with `HOTCELL_PROVIDER_KEY_<NAME>` |
 | `HOTCELL_MODEL_PRICES` | built-in | JSON file overriding the model price table (used to compute cost when a provider doesn't report it) |
 | `HOTCELL_EGRESS_SPEND_CAP` | `0` | Default per-sandbox LLM spend ceiling in USD (`0` = unlimited; per-create `egressSpendCapUsd` overrides) |
+| `HOTCELL_EGRESS_MAX_OUTPUT_TOKENS` | `8192` | Under a spend cap, the output-token limit the gateway sets on a generation request that names none (so its worst-case cost can be reserved against the cap). Uncapped calls are never modified |
 | `HOTCELL_EGRESS_ENFORCE` | `false` | **Default-deny egress** (Linux): lock sandboxes to the gateway + DNS via host iptables. Needs `CAP_NET_ADMIN`. Advisory on macOS |
 | `HOTCELL_EGRESS_NETWORK` / `HOTCELL_EGRESS_SUBNET` | `hotcell-egress` / `10.200.0.0/24` | Bridge name / subnet for enforced egress |
 | `HOTCELL_EGRESS_DNS` | embedded | Pinned DNS resolver IP under enforcement (blocks DNS exfil; DoH is denied by the allowlist) |

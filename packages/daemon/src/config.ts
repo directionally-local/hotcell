@@ -326,6 +326,14 @@ export interface Config {
    */
   maxBodyBytes: number;
   /**
+   * Output-token limit the egress gateway injects into a generation request that
+   * names none (`max_tokens` / `max_completion_tokens` / `max_output_tokens` /
+   * Gemini `generationConfig.maxOutputTokens`) when a spend cap applies, so the
+   * call's worst-case cost is bounded and can be reserved against the cap.
+   * Uncapped calls are never modified. `HOTCELL_EGRESS_MAX_OUTPUT_TOKENS`, default 8192.
+   */
+  egressMaxOutputTokens: number;
+  /**
    * Extra Host header values accepted by the API server, beyond the loopback
    * names and `host`. The Host allowlist is a DNS-rebinding / localhost-CSRF
    * guard. `HOTCELL_ALLOWED_HOSTS` (comma-separated). Empty by default.
@@ -415,6 +423,7 @@ export function loadConfig(): Config {
     metricsHistory: Number(env("METRICS_HISTORY") ?? 60),
     traceRing: Number(env("TRACE_RING") ?? 200),
     maxBodyBytes: Number(env("MAX_BODY_BYTES") ?? 32 * 1024 * 1024),
+    egressMaxOutputTokens: Number(env("EGRESS_MAX_OUTPUT_TOKENS") ?? 8192),
     allowedHosts: (env("ALLOWED_HOSTS") ?? "")
       .split(",")
       .map((h) => h.trim())
