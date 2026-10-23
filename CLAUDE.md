@@ -47,5 +47,5 @@ Three workspaces plus a base image, layered client → daemon → driver → Doc
 - Named exports only; no CommonJS. Every package is `"type": "module"`.
 - Each workspace extends `tsconfig.base.json` (strict, ES2022, `outDir: dist`, `rootDir: src`). The SDK additionally includes the `DOM` lib because it consumes `fetch`'s `ReadableStream`.
 - Don't add a heavy web framework to the daemon — the hand-rolled server is intentional for Phase 0.
-- Commit `package-lock.json` changes. Conventional commit prefixes (`feat:`, `daemon:`, `docs:`) are used; work happens on `main`.
+- Commit `package-lock.json` changes. PR titles must be conventional (`feat:`, `fix:`, `daemon:`, `cli:`, `docs:` …). They are squash-merged and **drive releases**: release-please (`release.yml`) turns them into the version bump, CHANGELOG and npm/PyPI publish. Never bump versions by hand. See PUBLISHING.md for which types trigger a release.
 - Update `docs/plan.md` when architectural decisions change.

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "pull-request-title-pattern": "release: v${version}",
+  "pull-request-header": "Merging this publishes every package below to npm, the Python SDK to PyPI, and the macOS VZ helper + arm64 guest to the GitHub release. All of it happens in `release.yml`.",
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "daemon", "section": "Daemon" },
+    { "type": "cli", "section": "CLI" },
+    { "type": "sdk", "section": "SDK" },
+    { "type": "mastra", "section": "Mastra" },
+    { "type": "agent", "section": "Guest agent" },
+    { "type": "build", "section": "Build and dependencies" },
+    { "type": "deps", "section": "Build and dependencies" },
+    { "type": "refactor", "section": "Refactors" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "docs", "section": "Docs", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "bench", "section": "Benchmarks", "hidden": true },
+    { "type": "ci", "section": "CI", "hidden": true },
+    { "type": "chore", "section": "Chores", "hidden": true },
+    { "type": "release", "section": "Releases", "hidden": true }
+  ],
+  "packages": {
+    ".": {
+      "package-name": "hotcell",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        { "type": "json", "path": "packages/sdk/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/daemon/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/daemon/package.json", "jsonpath": "$.devDependencies['@hotcell/sdk']" },
+        { "type": "json", "path": "packages/cli/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/cli/package.json", "jsonpath": "$.dependencies['@hotcell/daemon']" },
+        { "type": "json", "path": "packages/cli/package.json", "jsonpath": "$.dependencies['@hotcell/sdk']" },
+        { "type": "json", "path": "packages/mastra/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/mastra/package.json", "jsonpath": "$.dependencies['@hotcell/sdk']" },
+        { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/sdk'].version" },
+        { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/daemon'].version" },
+        { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/daemon'].devDependencies['@hotcell/sdk']" },
+        { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/cli'].version" },
+        { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/cli'].dependencies['@hotcell/daemon']" },
+        { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/cli'].dependencies['@hotcell/sdk']" },
+        { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/mastra'].version" },
+        { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/mastra'].dependencies['@hotcell/sdk']" },
+        { "type": "toml", "path": "sdk/python/pyproject.toml", "jsonpath": "$.project.version" }
+      ]
+    }
+  }
+}
