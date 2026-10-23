@@ -1,6 +1,6 @@
 {
   "name": "hotcell",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "Sandboxes for AI agents, on your own hardware — CLI + daemon for the hotcell sandbox platform",
   "license": "Apache-2.0",
   "type": "module",
@@ -20,8 +20,8 @@
     "prepack": "cp ../../README.md ./README.md && chmod +x dist/index.js dist/daemon.js"
   },
   "dependencies": {
-    "@hotcell/daemon": "0.1.26",
-    "@hotcell/sdk": "0.1.26"
+    "@hotcell/daemon": "0.1.27",
+    "@hotcell/sdk": "0.1.27"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

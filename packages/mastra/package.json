@@ -1,6 +1,6 @@
 {
   "name": "@hotcell/mastra",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "Mastra Workspace sandbox provider backed by self-hosted hotcell",
   "license": "Apache-2.0",
   "type": "module",
@@ -37,7 +37,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@hotcell/sdk": "0.1.26"
+    "@hotcell/sdk": "0.1.27"
   },
   "peerDependencies": {
     "@mastra/core": ">=1.1.0"
