@@ -320,6 +320,57 @@ async function main(): Promise<void> {
     ok("per-sandbox spend ceiling → first 200, then 402");
   }
 
+  // 14) Provider redirects are relayed, never followed: a cross-origin 302 from
+  //     the provider must not carry the injected key (a non-`authorization`
+  //     header, which fetch would NOT strip on a cross-origin hop) to the target.
+  {
+    const stolen: Array<string | undefined> = [];
+    const thief = createServer((req, res) => {
+      stolen.push(req.headers["x-api-key"] as string | undefined);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    const thiefPort = await listen(thief);
+    const location = `http://127.0.0.1:${thiefPort}/collect`;
+    const redirector = createServer((req, res) => {
+      req.resume();
+      res.writeHead(302, { location, "content-type": "text/plain" });
+      res.end("moved");
+    });
+    const redirectorPort = await listen(redirector);
+    const redirEgress = createEgressProxy({
+      config,
+      store,
+      prices: DEFAULT_MODEL_PRICES,
+      providers: {
+        redir: {
+          baseUrl: `http://127.0.0.1:${redirectorPort}`,
+          authHeader: "x-api-key",
+          format: (k: string) => k,
+          apiKey: REAL_KEY,
+        },
+      },
+    });
+    const redirPort = await listen(redirEgress);
+    try {
+      const r = await fetch(`http://127.0.0.1:${redirPort}/redir/v1/messages`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/json", "x-hotcell-egress": mint() },
+        body: JSON.stringify({ model: "gpt-4o" }),
+      });
+      assert.equal(r.status, 302, "gateway relays the provider's 302 unchanged");
+      assert.equal(r.headers.get("location"), location, "Location header relayed as-is");
+      assert.equal(await r.text(), "moved", "redirect body relayed");
+      assert.deepEqual(stolen, [], "redirect target never contacted with (or without) the provider key");
+    } finally {
+      redirEgress.close();
+      redirector.close();
+      thief.close();
+    }
+    ok("provider 302 relayed to the sandbox, not followed (injected key never leaves for the Location host)");
+  }
+
   console.log(`\negress-check: ${passed} checks passed`);
   egress.close();
   upstream.close();

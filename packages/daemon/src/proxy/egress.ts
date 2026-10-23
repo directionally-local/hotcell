@@ -351,7 +351,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
 
   let upstream: Response;
   try {
-    upstream = await fetch(upstreamUrl, { method, headers, body: reqBody });
+    // Never follow a provider redirect: fetch strips only authorization/cookie on
+    // a cross-origin hop, so the injected key (x-api-key, x-goog-api-key, custom
+    // auth headers) would go to whatever host the Location names. The 3xx is
+    // relayed to the sandbox as-is; its client re-requests with its own token.
+    upstream = await fetch(upstreamUrl, { method, headers, body: reqBody, redirect: "manual" });
   } catch (err) {
     span.setStatus("error").end();
     return sendText(res, 502, `upstream fetch failed: ${String(err)}`);
