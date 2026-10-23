@@ -50,7 +50,7 @@ Mint a token scoped to exactly what one agent should be able to do:
 hotcell egress <id> --spend-cap 5 --models 'gpt-4o,claude-3-5*' --rate-calls 60 --rate-window 1m --ttl 24h
 ```
 
-- `--spend-cap <usd>` — hard ceiling; the gateway returns **402** once this token's cost reaches it.
+- `--spend-cap <usd>` — hard ceiling; the gateway returns **402** for any call whose worst-case cost no longer fits under it ([how](#how-spend-caps-are-enforced)).
 - `--models <csv>` — model allowlist (prefix globs ok); a disallowed model → **403**.
 - `--providers <csv>` — restrict which providers this token may use → **403**.
 - `--rate-calls` / `--rate-tokens` / `--rate-window` — sliding-window rate limit → **429**.
@@ -64,9 +64,23 @@ A hard cap across *all* of a sandbox's tokens, so even an abused-but-not-yet-rev
 hotcell run --egress --egress-spend-cap 2 "..."     # this sandbox can never spend > $2 on LLMs
 ```
 
+## How spend caps are enforced
+
+A cap is checked *before* a call is forwarded, against the call's **worst-case cost**, not just against what earlier calls already spent — so neither one huge call nor a burst of concurrent ones can run past it. When a token cap or a sandbox cap applies:
+
+- **Every call reserves its worst case up front.** Worst case = *request-body bytes* as input tokens (a token is at least one byte of text, so this bounds a text prompt) + the call's *output limit*, times the number of completions asked for (`n`, `best_of`, `candidateCount`), at the model's price. The call is admitted only if *spent + in-flight reservations + this reservation* stays within each cap; otherwise **402**, and the call never reaches the provider. Check and reservation happen atomically, and when the call finishes (or fails) the reservation is replaced by its actual cost.
+- **The output limit is always bounded.** An explicit `max_tokens` / `max_completion_tokens` (OpenAI chat), `max_output_tokens` (Responses), `max_tokens` (Anthropic) or `generationConfig.maxOutputTokens` (Gemini) above **128,000** is clamped to 128,000; a missing (or `null`) one is set to `HOTCELL_EGRESS_MAX_OUTPUT_TOKENS` (default **8192**) in the forwarded body. On routes the gateway doesn't recognise, nothing is rewritten and 128,000 output tokens are reserved. Embeddings reserve input only; token-counting routes are free.
+- **Unpriced models are refused (403).** A model with no entry in the price table (exact or prefix match, after dropping a `vendor/` prefix) can't be bounded, so it can't run under a cap — add it to `HOTCELL_MODEL_PRICES`. Without a cap it still runs, metered as $0 with a warning.
+- **Usage is never silently free.** OpenAI chat streams get `stream_options.include_usage: true` so they report usage (the client sees one extra, choice-less final chunk). A successful response whose usage still can't be read — or a stream that dies midway — is charged its full reservation. Error responses with no usage cost nothing, since providers don't bill them.
+- **Gemini native routes** (`/google/v1beta/models/<model>:generateContent`) are priced and checked against `--models` by the model in the URL path, and metered from `usageMetadata`, with thinking tokens counted as output.
+
+Without a cap, nothing above changes the request: it's forwarded byte-for-byte and only metered. One exception: `--models` also checks a Gemini path model, cap or no cap.
+
+Limits: the bound covers what's *in* the request. Content the provider pulls in by reference costs more than its bytes suggest: an image URL, a Gemini `fileData` URI, an OpenAI `previous_response_id`, or a stored prompt. That content is billed at its real usage after the call, and the call's reservation doesn't cover it. Async jobs (Batch, fine-tuning, Assistants runs) aren't metered at all. A price-table prefix match can underprice a pricier variant, such as `o3` matching `o3-pro`, and long-context price tiers aren't modelled. Reservations live in the daemon's memory. To cap these, combine the cap with `--models` / `--providers`.
+
 ## Real cost, every provider
 
-OpenRouter reports USD inline; for OpenAI / Anthropic / Google the gateway computes it from a built-in model price table (override with `HOTCELL_MODEL_PRICES`). Per-sandbox LLM cost shows up in `hotcell stats`, the metrics API, and the dashboard, folded into the `$` total.
+OpenRouter reports USD inline; for OpenAI / Anthropic / Google the gateway computes it from the token usage each response reports (including Anthropic cache tokens and Gemini's `usageMetadata`) and a built-in model price table (override with `HOTCELL_MODEL_PRICES`). Per-sandbox LLM cost shows up in `hotcell stats`, the metrics API, and the dashboard, folded into the `$` total.
 
 ## Any provider, no code
 
