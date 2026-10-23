@@ -180,6 +180,12 @@ async function handleTerminalUpgrade(
     socket.destroy();
     return;
   }
+  if (isCrossSiteBrowserRequest(req, url.pathname)) {
+    auditAccessDenied("auth.cross_site_rejected", "GET", url.pathname, "cross_site_request", driver, store);
+    socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+    socket.destroy();
+    return;
+  }
   if (config.apiKey) {
     const provided = url.searchParams.get("key") ?? bearerFromHeader(req);
     if (!provided || !safeEqual(provided, config.apiKey)) {
@@ -493,6 +499,33 @@ function isAuthorized(req: IncomingMessage, config: Config, path: string): boole
   return provided !== undefined && safeEqual(provided, config.apiKey);
 }
 
+/**
+ * Browser CSRF / cross-site WebSocket guard. Browsers label every request with
+ * `Sec-Fetch-Site` (and send `Origin` on non-GET requests and WebSocket
+ * upgrades); a page on another origin must never drive this API, even though
+ * the API key already stops it. Non-browser clients (CLI, SDKs, curl) send
+ * neither header and are unaffected. Top-level navigation to the dashboard
+ * shell and health probes stay open so links to the dashboard keep working.
+ */
+export function isCrossSiteBrowserRequest(req: IncomingMessage, path: string): boolean {
+  const method = req.method ?? "GET";
+  if ((method === "GET" || method === "HEAD") && (path === "/" || path === "/dashboard" || path === "/healthz")) {
+    return false;
+  }
+  const site = req.headers["sec-fetch-site"];
+  if (typeof site === "string" && site !== "same-origin" && site !== "none") return true;
+  const origin = req.headers["origin"];
+  if (typeof origin === "string") {
+    if (origin === "null") return true;
+    try {
+      return new URL(origin).host.toLowerCase() !== String(req.headers["host"] ?? "").toLowerCase();
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** A host bound to a loopback interface (the dev default). */
 function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
@@ -532,6 +565,11 @@ async function handle(
   if (!isAllowedHost(req, config)) {
     auditAccessDenied("auth.host_rejected", method, path, "host_not_allowed", driver, store);
     return sendJson(res, 403, { error: "host not allowed" });
+  }
+
+  if (isCrossSiteBrowserRequest(req, path)) {
+    auditAccessDenied("auth.cross_site_rejected", method, path, "cross_site_request", driver, store);
+    return sendJson(res, 403, { error: "cross-site requests are not allowed" });
   }
 
   if (!isAuthorized(req, config, path)) {

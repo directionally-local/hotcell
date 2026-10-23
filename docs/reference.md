@@ -89,7 +89,7 @@ Set these before `hotcell start` (they're inherited by the daemon) or on `hotcel
 | `HOTCELL_SLEEP_AFTER_MS` | `0` | Default idle auto-pause (`0` = off) |
 | `HOTCELL_METRICS_INTERVAL_MS` / `HOTCELL_METRICS_HISTORY` | `10000` / `60` | Sampler cadence / sparkline ring |
 | `HOTCELL_COST_CPU_PER_HOUR` / `_MEM_GB_PER_HOUR` / `_EGRESS_PER_GB` | `0.05` / `0.005` / `0.01` | Cost-meter rates |
-| `HOTCELL_API_KEY` | — | Require this key on the REST API (empty = open, loopback) |
+| `HOTCELL_API_KEY` | generated | Key the REST API requires. Unset → the daemon generates one in `${HOTCELL_HOME:-~/.hotcell}/api-key` (0600), which the CLI and both SDKs read automatically for loopback endpoints |
 | `HOTCELL_ALLOWED_HOSTS` | — | Extra `Host` values accepted by the API (DNS-rebinding guard; loopback always allowed) |
 | `HOTCELL_MAX_BODY_BYTES` | `33554432` | Max request body size before 413 (REST + egress) |
 | `HOTCELL_LOG_LEVEL` / `HOTCELL_LOG_FORMAT` | `info` / `pretty` | Logging (`json` for ingestion) |

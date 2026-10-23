@@ -388,9 +388,10 @@ export interface DaemonInfo {
 export interface HotcellClientOptions {
   endpoint?: string;
   /**
-   * API key sent as `Authorization: Bearer <key>` on every request. Required when
-   * the daemon is started with `SBX_API_KEY`. Defaults to the `SBX_API_KEY` env
-   * var when omitted.
+   * API key sent as `Authorization: Bearer <key>` on every request. The daemon
+   * always requires one. Defaults to `HOTCELL_API_KEY` (legacy `SBX_API_KEY`),
+   * then, for a loopback endpoint, the key the local daemon generated in
+   * `${HOTCELL_HOME || ~/.hotcell}/api-key` (see `localApiKey`).
    */
   apiKey?: string;
 }
@@ -411,13 +412,16 @@ export class HotcellClient {
 
   constructor(opts: HotcellClientOptions = {}) {
     this.endpoint = (opts.endpoint ?? defaultEndpoint()).replace(/\/$/, "");
-    this.apiKey = opts.apiKey ?? defaultApiKey();
+    this.apiKey = opts.apiKey || defaultApiKey();
   }
 
   /** Build request headers, attaching the API key and any extras. */
   authHeaders(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = { ...extra };
-    if (this.apiKey) headers["authorization"] = `Bearer ${this.apiKey}`;
+    // Resolved per request: the local daemon may write its key file after
+    // this client was created (first start).
+    const key = this.apiKey || localApiKey(this.endpoint);
+    if (key) headers["authorization"] = `Bearer ${key}`;
     return headers;
   }
 
@@ -1063,6 +1067,47 @@ function defaultEndpoint(): string {
 
 function defaultApiKey(): string {
   return envVar("HOTCELL_API_KEY") ?? envVar("SBX_API_KEY") ?? "";
+}
+
+/** True for an endpoint on this machine (127.0.0.0/8, localhost, ::1). */
+export function isLoopbackEndpoint(endpoint: string): boolean {
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === "localhost" || host === "[::1]" || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host);
+}
+
+type NodeBuiltins = {
+  fs: { readFileSync(path: string, encoding: "utf8"): string };
+  os: { homedir(): string };
+  path: { join(...parts: string[]): string };
+};
+
+/**
+ * The key the local daemon generated (`${HOTCELL_HOME || ~/.hotcell}/api-key`),
+ * or "" when there is none, the endpoint is not on this machine (the local key
+ * is never sent anywhere else), or the runtime is not Node 20.16+.
+ */
+export function localApiKey(endpoint: string = defaultEndpoint()): string {
+  if (!isLoopbackEndpoint(endpoint)) return "";
+  const proc = (globalThis as {
+    process?: { env?: Record<string, string | undefined>; getBuiltinModule?: (id: string) => unknown };
+  }).process;
+  if (typeof proc?.getBuiltinModule !== "function") return "";
+  try {
+    const node: NodeBuiltins = {
+      fs: proc.getBuiltinModule("node:fs") as NodeBuiltins["fs"],
+      os: proc.getBuiltinModule("node:os") as NodeBuiltins["os"],
+      path: proc.getBuiltinModule("node:path") as NodeBuiltins["path"],
+    };
+    const home = proc.env?.HOTCELL_HOME || node.path.join(node.os.homedir(), ".hotcell");
+    return node.fs.readFileSync(node.path.join(home, "api-key"), "utf8").trim();
+  } catch {
+    return "";
+  }
 }
 
 function envVar(name: string): string | undefined {

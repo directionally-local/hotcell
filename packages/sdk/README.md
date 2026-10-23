@@ -30,7 +30,7 @@ await sandbox.destroy();
 - backups, lifecycle (`stop`/`start`, idle auto-pause), `metrics`/`metricsHistory`
 - egress credential proxy: `createEgressToken`/`listEgressTokens`/`revokeEgressToken`, or create with `{ egress: true }`
 
-Configure the endpoint via the constructor or `HOTCELL_ENDPOINT`, and the API key via `apiKey` or `HOTCELL_API_KEY`.
+Configure the endpoint via the constructor or `HOTCELL_ENDPOINT`, and the API key via `apiKey` or `HOTCELL_API_KEY`. For a daemon on this machine you can skip the key: the client reads the one the daemon generated in `${HOTCELL_HOME:-~/.hotcell}/api-key` (loopback endpoints only, Node 20.16+).
 
 See the [main README](https://github.com/sinameraji/hotcell) for the daemon, CLI, dashboard, and full docs.
 

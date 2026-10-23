@@ -326,6 +326,26 @@ class FileChangeEvent:
 # --- client ----------------------------------------------------------------
 
 
+def _is_loopback_endpoint(endpoint: str) -> bool:
+    host = (urllib.parse.urlsplit(endpoint).hostname or "").lower()
+    return host in ("localhost", "::1") or (
+        host.startswith("127.") and host.replace(".", "").isdigit())
+
+
+def local_api_key(endpoint: str) -> str:
+    """The key the local daemon generated (``$HOTCELL_HOME/api-key``, default
+    ``~/.hotcell/api-key``), or "" when there is none or the endpoint is not on
+    this machine (the local key is never sent anywhere else)."""
+    if not _is_loopback_endpoint(endpoint):
+        return ""
+    home = os.environ.get("HOTCELL_HOME") or os.path.join(os.path.expanduser("~"), ".hotcell")
+    try:
+        with open(os.path.join(home, "api-key"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 class HotcellClient:
     """Entry point. Talks to one hotcell daemon over its REST API."""
 
@@ -333,9 +353,10 @@ class HotcellClient:
                  api_key: Optional[str] = None):
         self.endpoint = (endpoint or os.environ.get("HOTCELL_ENDPOINT")
                          or DEFAULT_ENDPOINT).rstrip("/")
-        # API key sent as `Authorization: Bearer <key>`; required when the daemon
-        # runs with HOTCELL_API_KEY. Falls back to the HOTCELL_API_KEY env var.
-        self.api_key = api_key if api_key is not None else os.environ.get("HOTCELL_API_KEY", "")
+        # API key sent as `Authorization: Bearer <key>`; the daemon always
+        # requires one. Falls back to HOTCELL_API_KEY, then (loopback endpoints
+        # only) the key the local daemon generated; see local_api_key().
+        self.api_key = api_key or os.environ.get("HOTCELL_API_KEY", "")
 
     def get_sandbox(
         self,
@@ -506,8 +527,9 @@ class HotcellClient:
             url += "?" + urllib.parse.urlencode(params)
         data = None
         headers = {}
-        if self.api_key:
-            headers["authorization"] = "Bearer " + self.api_key
+        key = self.api_key or local_api_key(self.endpoint)
+        if key:
+            headers["authorization"] = "Bearer " + key
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["content-type"] = "application/json"
