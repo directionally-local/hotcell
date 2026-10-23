@@ -1,9 +1,25 @@
 import { timingSafeEqual } from "node:crypto";
+import { chmodSync, statSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 
 /** Normalize any thrown value to a message string. */
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Drop group/other permission bits from a secret-bearing file or dir (0644 →
+ * 0600, 0755 → 0700; no-op when already private or missing). Best-effort: a
+ * path we don't own, or Windows (chmod is mostly a no-op there; the
+ * user-profile ACL applies), is left as is.
+ */
+export function restrictMode(path: string): void {
+  try {
+    const mode = statSync(path).mode & 0o777;
+    if (mode & 0o077) chmodSync(path, mode & 0o700);
+  } catch {
+    /* missing, not ours, or Windows */
+  }
 }
 
 /** Single-quote a value for safe interpolation into a shell command. */

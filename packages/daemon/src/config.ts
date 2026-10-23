@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProviderKeyMap } from "./keystore.js";
+import { restrictMode } from "./util.js";
 
 // Build-time artifacts (the VZ helper binary, guest kernels, rootfs images) live
 // in the source tree under helpers/ and do NOT ship in the published npm package.
@@ -46,6 +47,9 @@ function readFileConfig(): Record<string, string> {
   } catch {
     return {}; // no file — the normal case
   }
+  // It can hold secrets (HOTCELL_API_KEY, …): tighten a file left 0644 by an
+  // older `hotcell setup` (current CLIs write it 0600).
+  restrictMode(CONFIG_FILE);
   try {
     const parsed: unknown = JSON.parse(raw);
     const out: Record<string, string> = {};

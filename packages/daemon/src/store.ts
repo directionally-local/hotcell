@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
@@ -12,6 +12,7 @@ import type {
   SandboxUsage,
   SessionInfo,
 } from "./types.js";
+import { restrictMode } from "./util.js";
 
 /** Zero-valued usage accumulator for a fresh sandbox. */
 export function emptyUsage(): SandboxUsage {
@@ -36,6 +37,23 @@ export interface ProviderUsageDelta {
   tokensOut: number;
   /** Provider-reported cost in USD for this call (0 if not reported). */
   cost: number;
+}
+
+/**
+ * Make the database private before SQLite opens it: `sandboxes.env` holds
+ * egress tokens and injected secrets. The main file is pre-created 0600 (or
+ * tightened if an older daemon left it 0644). SQLite's unix VFS creates the
+ * `-wal`/`-shm`/`-journal` side files with the main database file's
+ * permissions, so new ones inherit 0600 whenever they are (lazily) created; any
+ * left over from a crash under an older, looser db are tightened here too.
+ */
+function restrictDbFiles(dbPath: string): void {
+  try {
+    closeSync(openSync(dbPath, "a", 0o600)); // creates 0600 if missing; never truncates
+  } catch {
+    /* unwritable path: let DatabaseSync report it */
+  }
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) restrictMode(dbPath + suffix);
 }
 
 /** Where a preview route points, resolved by the proxy on each request. */
@@ -79,7 +97,10 @@ export class SandboxStore {
   private liveExecs = new Map<string, number>();
 
   constructor(dbPath = ":memory:") {
-    if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
+    if (dbPath !== ":memory:") {
+      mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
+      restrictDbFiles(dbPath);
+    }
     this.db = new DatabaseSync(dbPath);
     if (dbPath !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL;");
     this.migrate();

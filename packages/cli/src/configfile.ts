@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -29,6 +29,7 @@ export function readConfigFile(): Record<string, string> {
   } catch {
     return {};
   }
+  restrictMode(CONFIG_FILE); // tighten a file written by an older version
   try {
     const parsed: unknown = JSON.parse(raw);
     const out: Record<string, string> = {};
@@ -55,10 +56,30 @@ export function readConfigFile(): Record<string, string> {
  * truncated file it would discard as malformed.
  */
 export function writeConfigFile(values: Record<string, string>): void {
-  mkdirSync(HOME, { recursive: true });
+  // The file can hold secrets (HOTCELL_API_KEY from the wizard's network path,
+  // provider keys set by hand), so: home dir 0700, file 0600. The tmp file is
+  // created fresh with 0600 so the secret is never on disk with a looser mode.
+  mkdirSync(HOME, { recursive: true, mode: 0o700 });
+  restrictMode(HOME);
   const tmp = CONFIG_FILE + ".tmp";
-  writeFileSync(tmp, JSON.stringify(values, null, 2) + "\n");
+  rmSync(tmp, { force: true }); // `mode` only applies on create: never reuse a stale tmp
+  writeFileSync(tmp, JSON.stringify(values, null, 2) + "\n", { mode: 0o600 });
+  restrictMode(tmp);
   renameSync(tmp, CONFIG_FILE);
+}
+
+/**
+ * Drop group/other permission bits from `path` (0644 → 0600, 0755 → 0700; no-op
+ * when already private or missing). Best-effort: a file we don't own, or Windows
+ * (where chmod is mostly a no-op and the user-profile ACL applies), is left as is.
+ */
+export function restrictMode(path: string): void {
+  try {
+    const mode = statSync(path).mode & 0o777;
+    if (mode & 0o077) chmodSync(path, mode & 0o700);
+  } catch {
+    /* missing, not ours, or Windows */
+  }
 }
 
 /**
