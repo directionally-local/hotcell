@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import type { CreateOptions, HostInfo, ResourceLimits } from "./types.js";
 import { RUNNING_FROM_SOURCE } from "../config.js";
 import { fetchVzGuest, fetchVzHelper } from "./vz-fetch.js";
+import { redactSecrets } from "../audit.js";
 import { log } from "../logger.js";
 
 /** Config the driver factory hands the VZ driver (subset of the daemon config). */
@@ -147,8 +148,10 @@ export class AppleVzDriver extends AgentDriver {
     // Best-effort setup commands, mirroring the container driver (non-fatal).
     for (const command of opts.setup ?? []) {
       const code = await this.exec(opts.id, command, {}, () => {}).catch(() => -1);
-      if (code === 0) log.info("setup command ok", { sandbox: opts.id, command });
-      else log.warn("setup command failed (continuing)", { sandbox: opts.id, command, code });
+      // Setup steps can carry credentials (the gateway-wired git remote embeds
+      // the egress token; user steps may hold PATs): never log them raw.
+      if (code === 0) log.info("setup command ok", { sandbox: opts.id, command: redactSecrets(command) });
+      else log.warn("setup command failed (continuing)", { sandbox: opts.id, command: redactSecrets(command), code });
     }
   }
 

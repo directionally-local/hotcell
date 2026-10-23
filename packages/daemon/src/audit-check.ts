@@ -10,8 +10,15 @@ import {
   drainAudit,
   flushAudit,
   redactCommandForAudit,
+  redactSecrets,
+  safeRepoForLog,
   stopAudit,
 } from "./audit.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BackupRegistry } from "./backups.js";
+import { SandboxStore } from "./store.js";
 
 type Attribute = { key: string; value: Record<string, unknown> };
 type LogRecord = { attributes: Attribute[]; severityText: string; severityNumber: number };
@@ -78,6 +85,50 @@ async function main(): Promise<void> {
   assert.equal(redactCommandForAudit("sort -u names.txt"), "sort -u names.txt");
   assert.equal(redactCommandForAudit("curl -u alice:s3cret https://x.test").includes("s3cret"), false);
   assert.equal(redactCommandForAudit("curl --user=alice:s3cret https://x.test").includes("s3cret"), false);
+
+  // Driver logs of setup steps / repo URLs (redactSecrets is the full-length
+  // form the drivers log with). The gateway-wired git remote embeds the
+  // sandbox's egress token as URL userinfo.
+  const egressToken = SandboxStore.newEgressToken();
+  const remoteStep = `git -C /workspace/app remote set-url origin 'http://x-access-token:${egressToken}@127.0.0.1:4751/github-git/o/app.git'`;
+  for (const redact of [redactSecrets, redactCommandForAudit]) {
+    const out = redact(remoteStep);
+    assert.equal(out.includes(egressToken), false, "egress token leaked from git remote step");
+    assert.ok(out.includes("127.0.0.1:4751/github-git/o/app.git"), "host/path kept for debugging");
+  }
+  assert.equal(redactSecrets(`echo ${egressToken}`).includes(egressToken), false, "bare egress token redacted");
+  for (const url of ["https://alice:ghp_notreallyatoken@github.com/o/r.git", "https://alice:p@ss@github.com/o/r", "ssh://git:s3cret@host/r"]) {
+    const out = redactSecrets(`git clone --depth 1 '${url}'`);
+    assert.equal(/notreallyatoken|p@ss|ss@github|s3cret/.test(out), false, "URL userinfo leaked: " + out);
+  }
+  const long = "x".repeat(600) + " https://u:longsecret@h/r";
+  assert.equal(redactSecrets(long).length > 512, true, "log redaction does not truncate");
+  assert.equal(redactSecrets(long).includes("longsecret"), false);
+  assert.equal(safeRepoForLog("https://user:pat123@github.com/o/r.git?x=1#f"), "https://github.com/o/r.git");
+  assert.equal(safeRepoForLog("https://github.com/o/r"), "https://github.com/o/r");
+
+  // Backup ids are validated inside BackupRegistry: a traversal id never maps
+  // to a path outside the backup dir.
+  {
+    const root = mkdtempSync(join(tmpdir(), "hotcell-backups-"));
+    try {
+      const reg = new BackupRegistry(join(root, "backups"));
+      writeFileSync(join(root, "outside.json"), JSON.stringify({ backupId: "x", sandboxId: "s", createdAt: "", bytes: 1 }));
+      writeFileSync(join(root, "outside.tar"), "not yours");
+      for (const bad of ["../outside", "../../etc/passwd", "a/b", "", "ABCDEF012345", "0123456789ab.", "0123456789abc"]) {
+        assert.equal(await reg.get(bad), undefined, `get(${bad}) must be undefined`);
+        assert.equal(await reg.remove(bad), false, `remove(${bad}) must be false`);
+        assert.throws(() => reg.tarPath(bad), /invalid backup id/, `tarPath(${bad}) must throw`);
+      }
+      const id = SandboxStore.newBackupId();
+      await reg.save({ backupId: id, sandboxId: "s1", createdAt: new Date().toISOString(), bytes: 3 });
+      assert.equal((await reg.get(id))?.sandboxId, "s1", "a minted id round-trips");
+      assert.equal((await reg.list()).length, 1);
+      assert.equal(await reg.remove(id), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 
   const requestBodies: Payload[] = [];
   let requests = 0;

@@ -288,8 +288,15 @@ function severityNumber(severity: AuditSeverity): number {
   return severity === "ERROR" ? 17 : severity === "WARN" ? 13 : 9;
 }
 
-/** Redact likely credential forms from shell command strings before audit logging. */
-export function redactCommandForAudit(command: string): string {
+/**
+ * Redact likely credential forms from a shell command (or command output)
+ * string: KEY=/TOKEN= assignments, auth headers and flags, `-u user:pass`,
+ * well-known key prefixes, hotcell egress tokens, and URL userinfo
+ * (`https://user:pat@host`, the gateway's `http://x-access-token:<token>@…`
+ * git remote). Full length — for daemon logs; audit uses
+ * {@link redactCommandForAudit}, which also truncates.
+ */
+export function redactSecrets(command: string): string {
   return command
     .replace(/\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
     .replace(/((?:^|\s)(?:-H|--header)(?:\s+|=))(["'])(?:authorization|x-api-key)\s*:[\s\S]*?\2/gi, "$1$2[REDACTED]$2")
@@ -298,7 +305,18 @@ export function redactCommandForAudit(command: string): string {
     .replace(/((?:^|\s)(?:-u|--user)(?:=|\s+))(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s;&|:'"]*:[^\s;&|]+)/gi, "$1[REDACTED]")
     .replace(/(authorization\s*:\s*bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
     .replace(/(x-api-key\s*:\s*)[^\s"']+/gi, "$1[REDACTED]")
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b/g, "[REDACTED]")
-    .replace(/(https?:\/\/)[^/@\s]+@/gi, "$1[REDACTED]@")
-    .slice(0, 512);
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|hc-[0-9a-f]{48})\b/g, "[REDACTED]")
+    // URL userinfo, any scheme; greedy up to the LAST `@` before the path, so
+    // a password containing `@` doesn't leak its tail.
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s"']+@/gi, "$1[REDACTED]@");
+}
+
+/** Redact likely credential forms from shell command strings before audit logging. */
+export function redactCommandForAudit(command: string): string {
+  return redactSecrets(command).slice(0, 512);
+}
+
+/** A repo URL safe to log: userinfo, query and fragment stripped, capped. */
+export function safeRepoForLog(repo: string): string {
+  return repo.replace(/:\/\/[^/\s]+@/g, "://").split(/[?#]/, 1)[0]?.slice(0, 512) ?? "";
 }

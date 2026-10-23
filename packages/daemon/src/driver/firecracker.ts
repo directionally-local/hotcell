@@ -32,6 +32,7 @@ import {
 } from "./fc-api.js";
 import { VzImageCache } from "./vz-image.js";
 import type { CreateOptions, HostInfo, ResourceLimits } from "./types.js";
+import { redactSecrets } from "../audit.js";
 import { log } from "../logger.js";
 
 /** Config the driver factory hands the Firecracker driver (subset of daemon config). */
@@ -167,8 +168,10 @@ export class FirecrackerDriver extends AgentDriver {
     if (opts.setup?.length) opts.onProgress?.("running setup");
     for (const command of opts.setup ?? []) {
       const code = await this.exec(opts.id, command, {}, () => {}).catch(() => -1);
-      if (code === 0) log.info("setup command ok", { sandbox: opts.id, command });
-      else log.warn("setup command failed (continuing)", { sandbox: opts.id, command, code });
+      // Setup steps can carry credentials (the gateway-wired git remote embeds
+      // the egress token; user steps may hold PATs): never log them raw.
+      if (code === 0) log.info("setup command ok", { sandbox: opts.id, command: redactSecrets(command) });
+      else log.warn("setup command failed (continuing)", { sandbox: opts.id, command: redactSecrets(command), code });
     }
   }
 
