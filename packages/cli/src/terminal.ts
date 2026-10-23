@@ -1,4 +1,4 @@
-import { HotcellClient } from "@hotcell/sdk";
+import { HotcellClient, localApiKey } from "@hotcell/sdk";
 import type { GlobalArgs } from "./cli.js";
 
 /**
@@ -29,7 +29,8 @@ export async function terminalCommand(
   const cols = process.stdout.columns ?? 80;
   const rows = process.stdout.rows ?? 24;
   let url = `${base}/sandboxes/${id}/terminal?cols=${cols}&rows=${rows}`;
-  const key = globals.apiKey ?? (process.env.HOTCELL_API_KEY ?? process.env.SBX_API_KEY);
+  const key =
+    globals.apiKey || process.env.HOTCELL_API_KEY || process.env.SBX_API_KEY || localApiKey(client.endpoint);
   if (key) url += `&key=${encodeURIComponent(key)}`;
 
   const stdin = process.stdin;

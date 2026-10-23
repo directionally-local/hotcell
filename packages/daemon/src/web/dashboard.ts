@@ -125,6 +125,15 @@ var rates = { costCpuPerHour: 0, costMemGbPerHour: 0 };
 var selected = null;
 var liveTimer = null;
 var apiKey = localStorage.getItem("hotcell_api_key") || localStorage.getItem("sbx_api_key") || "";
+// A link like /dashboard#key=<key> signs the dashboard in, then the key is
+// dropped from the address bar (a fragment never reaches the server).
+(function () {
+  var m = /(?:^#|&)key=([^&]+)/.exec(location.hash);
+  if (!m) return;
+  apiKey = decodeURIComponent(m[1]);
+  localStorage.setItem("hotcell_api_key", apiKey);
+  history.replaceState(null, "", location.pathname + location.search);
+})();
 
 function authHeaders(h) {
   h = h || {};
@@ -132,7 +141,7 @@ function authHeaders(h) {
   return h;
 }
 function promptKey() {
-  var k = window.prompt("This daemon requires an API key (SBX_API_KEY):", apiKey);
+  var k = window.prompt("This daemon requires an API key: HOTCELL_API_KEY, or the generated one in ~/.hotcell/api-key on the daemon host.", apiKey);
   if (k != null) { apiKey = k; localStorage.setItem("hotcell_api_key", k); }
   return k;
 }

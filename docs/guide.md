@@ -99,7 +99,7 @@ sandbox.destroy()
 - **Metrics + cost** — per-sandbox CPU/mem/net/pids, integrated usage, and a configurable `$` cost meter (LLM cost folded in), with history sparklines in the dashboard.
 - **Observability + audit** — structured logs and OpenTelemetry traces; per-sandbox audit events are written by default to `~/.hotcell/audit.jsonl` and can also be sent as OTLP/HTTP logs to Beacon or your SIEM (`HOTCELL_OTLP_ENDPOINT`; optional JSON `HOTCELL_OTLP_HEADERS`). `HOTCELL_OTEL_ENDPOINT` / `HOTCELL_OTEL_HEADERS` remain audit-only compatibility overrides. Secret values and raw gateway tokens are never recorded.
 - **Live terminal** — a real interactive shell (xterm.js) per sandbox in the dashboard, or `hotcell terminal <id>`.
-- **Auth** — optional API key (`HOTCELL_API_KEY`) on the REST API, honored by both SDKs, the CLI, and the dashboard.
+- **Auth** — the REST API always requires a key: `HOTCELL_API_KEY`, or one the daemon generates in `~/.hotcell/api-key` that both SDKs and the CLI read automatically on the same machine. The dashboard asks for it once.
 
 ## Web dashboard
 

@@ -5,6 +5,7 @@ import { configureAudit, stopAudit } from "./audit.js";
 import { Capacity } from "./capacity.js";
 import { BootScheduler } from "./boot-scheduler.js";
 import { loadConfig, loadProviderConfigs } from "./config.js";
+import { ensureApiKey } from "./api-key.js";
 import { DriverRouter } from "./driver/router.js";
 import { startReaper } from "./lifecycle.js";
 import { configureLogger, log } from "./logger.js";
@@ -54,6 +55,9 @@ function reportPortInUse(host: string, port: number): void {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  // Auth is always on: an explicit HOTCELL_API_KEY, else a generated local key.
+  const auth = ensureApiKey(config.apiKey);
+  config.apiKey = auth.key;
   configureLogger({ level: config.logLevel, format: config.logFormat });
   configureAudit({ path: config.auditPath, endpoint: config.auditOtlpEndpoint, headers: config.auditOtlpHeaders });
   configureTracing({
@@ -135,7 +139,7 @@ async function main(): Promise<void> {
       url: `http://${config.host}:${config.port}`,
       driver: driver.name,
       image: config.defaultImage,
-      auth: config.apiKey ? "on" : "off",
+      auth: auth.source === "config" ? "on (HOTCELL_API_KEY)" : `on (key file ${auth.file})`,
       otlp: config.otlpEndpoint || "off",
       auditOtlp: config.auditOtlpEndpoint || "off",
     });

@@ -274,6 +274,7 @@ function actionForEvent(event: string): string {
     "gateway.spend_cap_reached": "spend.limit_reached",
     "auth.rejected": "authentication.denied",
     "auth.host_rejected": "authentication.host_denied",
+    "auth.cross_site_rejected": "authentication.cross_site_denied",
   };
   return known[event] ?? event;
 }

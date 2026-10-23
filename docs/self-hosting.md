@@ -32,7 +32,7 @@ Auto-handled on macOS Docker Desktop; on Linux there are three things to know:
 
 hotcell is **single-tenant** by design: the API offers arbitrary command execution *inside* sandboxes (that's the point), so anyone who can reach the API controls them. Treat API access as shell access.
 
-- **Bind + auth.** Loopback + auth-off by default. Exposing it on a network? Set `HOTCELL_API_KEY` (constant-time checked; honored by both SDKs, the CLI, and the dashboard) and bind a real interface via `HOTCELL_HOST`.
+- **Bind + auth.** Loopback by default, and the API always requires a key: set `HOTCELL_API_KEY`, or the daemon generates one in `~/.hotcell/api-key` (0600) that the local CLI and SDKs pick up on their own. Sandboxes can reach the host (`host.docker.internal`), so an open API would let one sandbox drive the others. Requests a browser marks as cross-site are refused too. Exposing it on a network? Bind a real interface via `HOTCELL_HOST` and give remote clients the key. The dashboard asks for it, or open `/dashboard#key=<key>`.
 - **Keys out of the sandbox.** Provider keys live on the daemon; sandboxes get revocable, policy-scoped tokens (see the [egress control plane](egress.md)). Combined with `HOTCELL_EGRESS_ENFORCE` on Linux, even a stolen token can't be exfiltrated — there's nowhere to send it.
 - **Spend bounds.** Per-token (`--spend-cap`) and per-sandbox (`--egress-spend-cap`) hard ceilings cap LLM cost even if a token is abused before you revoke it.
 - **Browser guard.** On a loopback bind, the API rejects requests whose `Host` isn't loopback / `HOTCELL_HOST` / `HOTCELL_ALLOWED_HOSTS` — a DNS-rebinding / localhost-CSRF guard.
