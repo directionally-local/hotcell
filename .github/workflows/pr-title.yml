@@ -1,0 +1,30 @@
+# release-please builds the version bump and CHANGELOG.md from squash-merged PR
+# titles, so a title it can't parse is a change that never ships. This fails the
+# PR until the title is `type(scope)?: summary`, with a type from
+# release-please-config.json. feat/fix/perf/daemon/cli/sdk/mastra/agent/build/
+# deps/refactor/revert cut a release; docs/test/bench/ci/chore don't. Add `!`
+# (`feat!:`) for a breaking change. No third-party action: the title comes from
+# the event payload, and nothing from the PR is checked out or run.
+name: pr title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|perf|daemon|cli|sdk|mastra|agent|build|deps|refactor|revert|docs|test|bench|ci|chore|release'
+          if printf '%s' "$TITLE" | grep -Eq "^($types)(\([a-z0-9._/-]+\))?!?: .+"; then
+            echo "ok: $TITLE"
+          else
+            echo "::error::PR title \"$TITLE\" isn't a conventional commit. Use type(scope)?: summary, where type is one of: ${types//|/, }"
+            exit 1
+          fi

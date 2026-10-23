@@ -1,10 +1,11 @@
 /**
  * Release lockstep guard. Fails if the four npm workspaces disagree on version,
  * if any internal `hotcell`/`@hotcell/*` dependency pin doesn't match that
- * version, or (in CI, when GITHUB_REF_NAME is a v* tag) if the tag doesn't
- * match. Exists because v0.1.21 shipped the CLI pinned to @hotcell/daemon
- * 0.1.20 — users installed a daemon one release behind the CLI sitting next to
- * it. Runs in release.yml before `npm publish`; run locally with
+ * version, or (in CI, when RELEASE_TAG or GITHUB_REF_NAME is a v* tag) if the
+ * tag doesn't match. RELEASE_TAG wins because release.yml publishes from a push
+ * to main, where GITHUB_REF_NAME is the branch. Exists because v0.1.21 shipped
+ * the CLI pinned to @hotcell/daemon 0.1.20 — users installed a daemon one
+ * release behind the CLI sitting next to it. Runs in release.yml before `npm publish`; run locally with
  * `npm run check:versions`.
  */
 import { readFileSync } from "node:fs";
@@ -33,7 +34,7 @@ for (const pkg of pkgs) {
   }
 }
 
-const tag = process.env.GITHUB_REF_NAME;
+const tag = process.env.RELEASE_TAG ?? process.env.GITHUB_REF_NAME;
 if (tag?.startsWith("v") && tag !== `v${version}`) {
   errors.push(`tag ${tag} doesn't match package version ${version}`);
 }

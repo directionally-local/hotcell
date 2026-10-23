@@ -1,21 +1,88 @@
-# Trusted publishing: npm publish via GitHub OIDC — no npm token stored anywhere,
-# and every package gets provenance attestations. This is the post-Jan-2027 path
-# (2FA-bypass tokens lose publish rights then; see PUBLISHING.md).
+# Automated releases: merge PRs to main, nothing else.
 #
-# Prerequisite (once per package, AFTER its first manual publish): on npmjs.com,
-# package → Settings → Publishing access → add Trusted Publisher:
+# 1. Every push to main runs release-please, which keeps one open "release: vX.Y.Z"
+#    PR up to date: it bumps all four npm workspaces, their exact internal pins,
+#    package-lock.json and sdk/python/pyproject.toml in lockstep, and writes
+#    CHANGELOG.md from the conventional-commit PR titles since the last release
+#    (config: release-please-config.json).
+# 2. Merging that PR makes release-please tag vX.Y.Z and create the GitHub release.
+#    The jobs below then publish in this same run: npm (provenance), PyPI, the
+#    macOS VZ helper and the arm64 guest tarball.
+#
+# The publish jobs live here, not in a tag-triggered workflow, because a tag
+# pushed with GITHUB_TOKEN never starts another workflow. This file also has to
+# stay named release.yml: the npm and PyPI trusted publishers are bound to it.
+#
+# Trusted publishing means npm and PyPI get no stored token. Both publish over
+# GitHub OIDC, and every npm package gets provenance attestations. Prerequisite
+# (once per package, AFTER its first manual publish): on npmjs.com, package →
+# Settings → Publishing access → add Trusted Publisher:
 #   GitHub repo `sinameraji/hotcell`, workflow `release.yml`.
+#
+# Manual fallback: pushing a v* tag (or running this workflow on a tag) still
+# publishes that tag without going through release-please.
 name: release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+
+# Merges that land close together queue up instead of racing on the release PR.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  release-please:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # tags + GitHub releases
+      pull-requests: write # the release PR
+      issues: write # labels on the release PR
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Decides whether this run publishes, and what tag. On main: only when
+  # release-please just cut a release. On a tag push (manual fallback): that tag.
+  plan:
+    needs: release-please
+    if: always() && (needs.release-please.result == 'success' || needs.release-please.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      publish: ${{ steps.p.outputs.publish }}
+      tag: ${{ steps.p.outputs.tag }}
+    steps:
+      - id: p
+        env:
+          RELEASED: ${{ needs.release-please.outputs.release_created }}
+          RP_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"; echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          elif [ "$RELEASED" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"; echo "tag=$RP_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # PyPI trusted publishing (OIDC). Prerequisite (once): pypi.org → Account →
   # Publishing → "Add a pending publisher" → project `hotcell`, owner
   # `sinameraji`, repo `hotcell`, workflow `release.yml`, environment blank.
   pypi:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -23,6 +90,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -33,6 +102,8 @@ jobs:
           skip-existing: true # re-triggered tags shouldn't fail on an already-uploaded version
 
   publish:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -40,6 +111,8 @@ jobs:
       id-token: write # OIDC for npm trusted publishing + provenance
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -49,6 +122,8 @@ jobs:
       # Guard against v0.1.21's failure mode: versions bumped but the exact
       # internal pins (cli -> daemon/sdk, mastra -> sdk) left one release behind.
       - name: lockstep version check
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
         run: node scripts/check-release-versions.mjs
       - run: npm ci
       - run: npm run build
@@ -65,12 +140,16 @@ jobs:
   # virtualization entitlement and needs no Apple Developer account. Independent of
   # the npm/PyPI jobs — a helper build failure never blocks package publishing.
   helper-macos:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
     runs-on: macos-14
     timeout-minutes: 20
     permissions:
       contents: write # create the release + upload assets
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -81,6 +160,7 @@ jobs:
       - name: attach to the release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.plan.outputs.tag }}
           files: |
             helpers/hotcell-vz/dist/hotcell-vz
             helpers/hotcell-vz/dist/hotcell-vz.sha256
@@ -91,12 +171,16 @@ jobs:
   # a ~15-30 min compile in an arm64 Docker container (build-kernel.sh). Independent
   # of the npm/PyPI jobs — a guest build failure never blocks package publishing.
   guest-arm64:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: agent/go.mod
@@ -115,6 +199,7 @@ jobs:
       - name: attach to the release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.plan.outputs.tag }}
           files: |
             helpers/hotcell-vz/hotcell-vz-guest-arm64.tar.gz
             helpers/hotcell-vz/hotcell-vz-guest-arm64.tar.gz.sha256

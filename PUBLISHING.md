@@ -11,72 +11,64 @@ in dependency order:
 | `hotcell`         | flagship: CLI + bundled daemon bins         | 3 |
 | `@hotcell/mastra` | Mastra tool integration                     | 4 |
 
-## 0. One-time setup
+## Releasing (automated, every release)
 
-```bash
-npm login                          # your npmjs.com account (enable 2FA)
-# Create the @hotcell scope: npmjs.com → Add Organization → name: hotcell (free plan).
-# The unscoped name `hotcell` is claimed by the first publish of packages/cli.
-```
+**Merge PRs. That's it.** `.github/workflows/release.yml` runs
+[release-please](https://github.com/googleapis/release-please) on every push to
+`main`:
 
-## 1. Preflight (every release)
+1. release-please keeps one open **`release: vX.Y.Z`** PR up to date. It bumps
+   all four workspaces, their exact internal pins (cli → daemon/sdk, mastra → sdk,
+   daemon devDep → sdk), `package-lock.json` and `sdk/python/pyproject.toml` in
+   lockstep, and writes `CHANGELOG.md`. Which files and fields it touches is set
+   in `release-please-config.json`. The current version is in
+   `.release-please-manifest.json`.
+2. **Merge that PR when you want to ship.** release-please then tags `vX.Y.Z` and
+   creates the GitHub release. The same workflow run publishes npm (dependency
+   order, provenance), PyPI, the macOS VZ helper and the arm64 guest tarball.
+   `check:versions` runs before `npm publish`, so the pins can't drift.
 
-```bash
-npm install && npm run build       # clean build of all workspaces
-npm run test:agent                 # Go agent unit tests
-npm run check:fc && npm run check:agent && npm run check:egress
-npm run smoke                      # container e2e (needs Docker)
-# microVM gates when touched: check:applevz / smoke:vz (Mac), smoke:fc (KVM box)
-git status --short                 # must be clean; CI on main must be green
-```
+What the PR title decides (squash-merge uses it as the commit, and the
+`pr title` check rejects titles release-please can't parse):
 
-Version bump across all four packages (keep them in lockstep):
+| Title type | Effect |
+|---|---|
+| `feat`, `fix`, `perf`, `daemon`, `cli`, `sdk`, `mastra`, `agent`, `build`, `deps`, `refactor`, `revert` | goes in the changelog and triggers a release (patch bump while < 1.0) |
+| `docs`, `test`, `bench`, `ci`, `chore` | no release |
+| any type with `!` (`feat!:`) or a `BREAKING CHANGE:` footer | minor bump while < 1.0 |
 
-```bash
-npm version 0.1.0 --workspaces --no-git-tag-version   # or the next version
-# npm does NOT rewrite the internal dep pins (cli -> daemon/sdk, mastra -> sdk,
-# daemon devDep -> sdk). They are EXACT versions — update them to the new
-# version on EVERY bump, then verify:
-npm run check:versions            # release.yml runs this too, before publishing
-npm install                       # sync package-lock.json
-git commit -am "release: v0.1.0" && git push
-```
+To force a specific version, add a `Release-As: 0.2.0` line to a commit body on
+`main`. The release PR is opened with `GITHUB_TOKEN`, so CI does not run on it.
+It only changes version fields and the changelog.
 
-(v0.1.21 shipped with the CLI pinned to `@hotcell/daemon@0.1.20` because this
-step was skipped — `check:versions` now fails the publish job if pins drift.)
+Repo settings this depends on (already set): Settings → Actions → General →
+"Allow GitHub Actions to create and approve pull requests" on, and Settings →
+General → squash-merge commit title = "Pull request title".
 
-## 2. Publish (dependency order)
+### Manual fallback
 
-```bash
-npm publish -w @hotcell/sdk --access public
-npm publish -w @hotcell/daemon --access public
-npm publish -w hotcell                       # unscoped: public by default
-npm publish -w @hotcell/mastra --access public
-```
+Pushing a tag still publishes it, skipping release-please. Bump first (see
+`check:versions`), then: `git tag v0.2.0 && git push origin v0.2.0`.
 
-Notes:
-- Scoped packages need `--access public` on the FIRST publish (default is private).
-- `files` in each package.json restricts the tarball to `dist/` — verify with
-  `npm pack -w hotcell --dry-run` before the real publish.
+### Trusted publishing (OIDC, no tokens)
 
-### 2FA (July 2026 npm policy change)
+npm and PyPI get no stored token. Both publish over GitHub OIDC, bound to
+repo `sinameraji/hotcell` + workflow `release.yml`. **Don't rename
+`release.yml`**, or both publishers stop matching. A new package needs one
+manual first publish, then npmjs.com → package → Settings → Publishing access →
+add Trusted Publisher with that repo and workflow.
 
-npm is deprecating 2FA-bypass tokens (account ops: Aug 2026; direct publish:
-Jan 2027 — after that such tokens can only *stage* a publish for human 2FA
-approval). Publish **interactively with 2FA on**: npm ≥10 opens a browser
-WebAuthn prompt per publish, or append a fresh `--otp=<code>` to each command
-(codes rotate every 30s — one per publish, don't reuse). Do NOT publish via
-automation tokens from the terminal.
+npm is deprecating 2FA-bypass tokens (direct publish: Jan 2027), so if you ever
+publish from a terminal, do it interactively with 2FA (`--otp=<code>`, one per
+publish). Don't use automation tokens.
 
-### Future releases: trusted publishing (OIDC, no tokens)
+### Preflight for risky releases
 
-`.github/workflows/release.yml` publishes all four packages with provenance on
-a `v*` tag push. Setup (once per package, only possible AFTER its first manual
-publish): npmjs.com → package → Settings → Publishing access → add Trusted
-Publisher → GitHub repo `sinameraji/hotcell`, workflow `release.yml`. From then
-on a release is just: `git tag v0.2.0 && git push origin v0.2.0`.
+CI runs on every PR. MicroVM gates are hardware-bound and do not run in CI, so
+run them before merging the release PR when a change touched those paths:
+`check:applevz` / `smoke:vz` on a Mac, `smoke:fc` on the KVM box.
 
-## 3. Verify the install story
+## Verify the install story
 
 ```bash
 npm install -g hotcell
@@ -85,19 +77,13 @@ hotcelld &                         # daemon starts (needs Docker for containers)
 hotcell run "python3 -c 'print(2+2)'"
 ```
 
-## 4. Tag + GitHub release
+## Python SDK (PyPI)
 
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-gh release create v0.1.0 --title "hotcell v0.1.0" --generate-notes
-```
+`sdk/python` (`hotcell` on PyPI) has zero runtime dependencies. It ships in the
+same release, versioned in lockstep, through PyPI trusted publishing (OIDC). No
+API token is stored anywhere.
 
-## 5. Python SDK (PyPI, when ready)
-
-`sdk/python` needs a `pyproject.toml` (name: `hotcell`, check availability with
-`pip index versions hotcell`) — then `python -m build && twine upload dist/*`.
-
-## 6. Later: one-command install
+## Later: one-command install
 
 - Homebrew tap (`brew install sinameraji/tap/hotcell`) wrapping the npm install
   or a bundled binary.
