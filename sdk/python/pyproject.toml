@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hotcell"
-version = "0.1.26"
+version = "0.1.27"
 description = "Python client for the hotcell self-hostable agent sandbox daemon"
 readme = "README.md"
 license = { text = "Apache-2.0" }
