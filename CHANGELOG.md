@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.28](https://github.com/sinameraji/hotcell/compare/v0.1.27...v0.1.28) (2026-10-23)
+
+
+### Fixes
+
+* **egress:** make spend caps hard ceilings with pre-flight cost reservation ([#30](https://github.com/sinameraji/hotcell/issues/30)) ([37e65ce](https://github.com/sinameraji/hotcell/commit/37e65ce576fec848b94ab240deed1bf6c825d53a))
+
 ## [0.1.27](https://github.com/sinameraji/hotcell/compare/v0.1.26...v0.1.27) (2026-10-23)
 
 
