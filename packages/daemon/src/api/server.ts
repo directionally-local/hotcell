@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { audit, redactCommandForAudit } from "../audit.js";
+import { audit, redactCommandForAudit, safeRepoForLog } from "../audit.js";
 import type { Duplex } from "node:stream";
 import { type BackupInfo, BackupRegistry } from "../backups.js";
 import { previewUrl, type Config } from "../config.js";
@@ -966,10 +966,6 @@ async function handle(
   sendJson(res, 404, { error: `no route for ${method} ${path}` });
 }
 
-function safeRepoForAudit(repo: string): string {
-  return repo.replace(/:\/\/[^/@]+@/g, "://").split(/[?#]/, 1)[0]?.slice(0, 512) ?? "";
-}
-
 async function createSandbox(
   res: ServerResponse,
   { config, driver, store, capacity, bootScheduler }: Pick<Deps, "config" | "driver" | "store" | "capacity" | "bootScheduler">,
@@ -1102,7 +1098,7 @@ async function createSandbox(
     usage: emptyUsage(),
   };
   store.add(record);
-  audit({ event: "sandbox.create", sandboxId: id, driver: driverName, attributes: { image, repo: repo ? safeRepoForAudit(repo) : "", branch: (repoRef ?? branchRaw ?? "").slice(0, 256), memoryMb: limits.memoryMb ?? 0, cpus: limits.cpus ?? 0 } });
+  audit({ event: "sandbox.create", sandboxId: id, driver: driverName, attributes: { image, repo: repo ? safeRepoForLog(repo) : "", branch: (repoRef ?? branchRaw ?? "").slice(0, 256), memoryMb: limits.memoryMb ?? 0, cpus: limits.cpus ?? 0 } });
   if (egressToken) store.addEgressToken(egressToken, id, egressPolicy);
 
   const provision = () =>
