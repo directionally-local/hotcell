@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.30](https://github.com/sinameraji/hotcell/compare/v0.1.29...v0.1.30) (2026-10-24)
+
+
+### Fixes
+
+* **image:** rebuild the base image fresh so it gets Debian security fixes ([#34](https://github.com/sinameraji/hotcell/issues/34)) ([7dfe1f7](https://github.com/sinameraji/hotcell/commit/7dfe1f7e17fa740d6a8dbf0a0477263fb0924f99))
+
 ## [0.1.29](https://github.com/sinameraji/hotcell/compare/v0.1.28...v0.1.29) (2026-10-24)
 
 
