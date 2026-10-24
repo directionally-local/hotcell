@@ -17,6 +17,7 @@ import { createProxyServer } from "./proxy/server.js";
 import { buildProviders, createEgressProxy, type EgressServer } from "./proxy/egress.js";
 import { loadProviderKeyMap } from "./keystore.js";
 import { loadModelPrices } from "./pricing.js";
+import { brotliRuntimeAdvisory } from "./runtime-advisory.js";
 import { ensureEgressFirewall, startEgressDropMonitor } from "./net/firewall.js";
 import { errorMessage } from "./util.js";
 
@@ -59,6 +60,8 @@ async function main(): Promise<void> {
   const auth = ensureApiKey(config.apiKey);
   config.apiKey = auth.key;
   configureLogger({ level: config.logLevel, format: config.logFormat });
+  const runtimeAdvisory = brotliRuntimeAdvisory();
+  if (runtimeAdvisory) log.warn(runtimeAdvisory);
   configureAudit({ path: config.auditPath, endpoint: config.auditOtlpEndpoint, headers: config.auditOtlpHeaders });
   configureTracing({
     serviceName: "hotcell",
