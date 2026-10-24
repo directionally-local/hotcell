@@ -116,6 +116,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           registry-url: https://registry.npmjs.org
       # OIDC trusted publishing needs npm >= 11.5; node 22 bundles npm 10.
       - run: npm install -g npm@latest
@@ -153,6 +154,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
       - name: build + ad-hoc-sign the VZ helper
         run: npm run build:vz
       - name: checksum
