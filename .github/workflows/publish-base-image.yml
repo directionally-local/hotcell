@@ -70,8 +70,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=node${{ inputs.node_major }}
-          cache-to: type=gha,mode=max,scope=node${{ inputs.node_major }}
+          # Always rebuild: a cached apt layer would republish the packages of
+          # the first build and miss every Debian security fix since.
+          no-cache: true
 
   smoke:
     needs: build-push
@@ -93,6 +94,11 @@ jobs:
           echo "node $version"
           case "$version" in v${{ inputs.node_major }}.*) ;; *) echo "expected Node ${{ inputs.node_major }}.x"; exit 1 ;; esac
           docker run --rm --entrypoint sh "$HOTCELL_IMAGE" -c 'git --version && python3 --version && npm --version && rg --version | head -1'
+      - name: image has the Brotli fix (CVE-2026-111497)
+        run: |
+          # curl and git link libbrotli1; Debian fixed it in 1.0.9-2+deb12u1.
+          docker run --rm --entrypoint sh "$HOTCELL_IMAGE" -c \
+            'v=$(dpkg-query -W -f="\${Version}" libbrotli1) && echo "libbrotli1 $v" && dpkg --compare-versions "$v" ge 1.0.9-2+deb12u1'
       - uses: actions/setup-node@v4
         with:
           node-version: 22

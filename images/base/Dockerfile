@@ -17,7 +17,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # socat backs the preview-URL proxy's binary-safe TCP bridge (clean half-close);
 # the daemon falls back to a bash /dev/tcp bridge on images without it.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `upgrade` also applies Debian security fixes to packages the python base
+# image already ships (the publish workflow rebuilds without cache so new
+# fixes, like libbrotli1's for CVE-2026-111497, are picked up).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
         ca-certificates curl git bash build-essential procps \
         ripgrep jq tini socat \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
