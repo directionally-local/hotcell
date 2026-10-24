@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.29](https://github.com/sinameraji/hotcell/compare/v0.1.28...v0.1.29) (2026-10-24)
+
+
+### Fixes
+
+* **daemon:** warn at startup on Node with the Brotli RCE (CVE-2026-111497) ([#32](https://github.com/sinameraji/hotcell/issues/32)) ([f5cd741](https://github.com/sinameraji/hotcell/commit/f5cd7412c4a3f0a45322b99818cb76e25cdb95ce))
+
 ## [0.1.28](https://github.com/sinameraji/hotcell/compare/v0.1.27...v0.1.28) (2026-10-23)
 
 
