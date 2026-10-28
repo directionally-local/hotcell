@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
  * downloaded helper always runs.
  */
 
-const RELEASE_BASE = "https://github.com/sinameraji/hotcell/releases/download";
+const RELEASE_BASE = "https://github.com/directionally-local/hotcell/releases/download";
 
 /** This daemon's version — the release tag we fetch matching artifacts from. */
 export function daemonVersion(): string {

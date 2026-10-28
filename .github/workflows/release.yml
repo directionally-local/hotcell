@@ -17,7 +17,7 @@
 # GitHub OIDC, and every npm package gets provenance attestations. Prerequisite
 # (once per package, AFTER its first manual publish): on npmjs.com, package →
 # Settings → Publishing access → add Trusted Publisher:
-#   GitHub repo `sinameraji/hotcell`, workflow `release.yml`.
+#   GitHub repo `directionally-local/hotcell`, workflow `release.yml`.
 #
 # Manual fallback: pushing a v* tag (or running this workflow on a tag) still
 # publishes that tag without going through release-please.
@@ -79,7 +79,7 @@ jobs:
 
   # PyPI trusted publishing (OIDC). Prerequisite (once): pypi.org → Account →
   # Publishing → "Add a pending publisher" → project `hotcell`, owner
-  # `sinameraji`, repo `hotcell`, workflow `release.yml`, environment blank.
+  # `directionally-local`, repo `hotcell`, workflow `release.yml`, environment blank.
   pypi:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
@@ -116,6 +116,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           registry-url: https://registry.npmjs.org
       - uses: actions/setup-go@v5
         with:
@@ -157,6 +158,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
       - name: build + ad-hoc-sign the VZ helper
         run: npm run build:vz
       - name: checksum

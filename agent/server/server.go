@@ -27,7 +27,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/sinameraji/hotcell/agent/proto"
+	"github.com/directionally-local/hotcell/agent/proto"
 )
 
 // Version is the agent build version, surfaced in the Hello greeting.

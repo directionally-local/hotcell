@@ -9,7 +9,7 @@
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as netCreateServer } from "node:net";
 import assert from "node:assert/strict";
-import { buildProviders, createEgressProxy } from "./proxy/egress.js";
+import { buildProviders, createEgressProxy, EGRESS_OUTPUT_TOKEN_CEILING } from "./proxy/egress.js";
 import { parseEgressFirewallDrop } from "./net/firewall.js";
 import { proxyEnvWanted } from "./api/server.js";
 import { Allowlist } from "./proxy/allowlist.js";
@@ -185,12 +185,13 @@ async function main(): Promise<void> {
     ok("model allowlist: gpt-3.5 → 403, gpt-4o → 200");
   }
 
-  // 8) Spend cap → 402 once accumulated spend reaches the cap.
+  // 8) Spend cap → 402 once accumulated spend reaches the cap. (Under a cap a
+  //    call's worst case — here max_tokens 100 of gpt-4o — must fit to be admitted.)
   {
     const token = mint({ spendCapUsd: 0.01 });
-    const first = await call(token, { model: "gpt-4o" }, { "x-mock-cost": "1" }); // spends 0.0123
+    const first = await call(token, { model: "gpt-4o", max_tokens: 100 }, { "x-mock-cost": "1" }); // spends 0.0123
     assert.equal(first.status, 200, "first call under cap should 200");
-    const second = await call(token, { model: "gpt-4o" }, { "x-mock-cost": "1" });
+    const second = await call(token, { model: "gpt-4o", max_tokens: 100 }, { "x-mock-cost": "1" });
     assert.equal(second.status, 402, "second call over cap should 402");
     ok("spend cap → first 200, then 402");
   }
@@ -305,16 +306,16 @@ async function main(): Promise<void> {
     store.add(sb2);
     const token = SandboxStore.newEgressToken();
     store.addEgressToken(token, sb2.id); // no per-token policy
-    const first = await fetch(`${base}/mock/v1/chat`, {
+    const first = await fetch(`${base}/mock/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-hotcell-egress": token, "x-mock-cost": "1" },
-      body: JSON.stringify({ model: "gpt-4o" }),
+      body: JSON.stringify({ model: "gpt-4o", max_tokens: 100 }),
     });
     assert.equal(first.status, 200, "first call under sandbox cap should 200");
-    const second = await fetch(`${base}/mock/v1/chat`, {
+    const second = await fetch(`${base}/mock/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-hotcell-egress": token, "x-mock-cost": "1" },
-      body: JSON.stringify({ model: "gpt-4o" }),
+      body: JSON.stringify({ model: "gpt-4o", max_tokens: 100 }),
     });
     assert.equal(second.status, 402, "second call over sandbox cap should 402");
     ok("per-sandbox spend ceiling → first 200, then 402");
@@ -369,6 +370,179 @@ async function main(): Promise<void> {
       thief.close();
     }
     ok("provider 302 relayed to the sandbox, not followed (injected key never leaves for the Location host)");
+  }
+
+  // 15) Spend caps are hard ceilings: worst-case reservation before forwarding,
+  //     unpriced models refused, Gemini-native + OpenAI-stream usage metered.
+  {
+    // Spy upstream: records every request; replies per the `x-spy` header —
+    // `hold` parks the reply until released, `gemini` answers with Gemini
+    // `usageMetadata`, `sse-usage` streams an OpenAI usage frame only when the
+    // request asked for one, `sse-none` streams no usage at all.
+    const seen: Array<{ url: string; body: any }> = [];
+    let held: Array<() => void> = [];
+    const spy = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        let body: any;
+        try {
+          body = JSON.parse(raw || "{}");
+        } catch {
+          body = raw;
+        }
+        seen.push({ url: req.url ?? "", body });
+        const mode = req.headers["x-spy"];
+        const json = (o: unknown) => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(o));
+        };
+        if (mode === "hold") {
+          held.push(() => json({ model: body.model, usage: { prompt_tokens: 1000, completion_tokens: 1000 } }));
+        } else if (mode === "gemini") {
+          json({ candidates: [], modelVersion: "gemini-2.0-flash", usageMetadata: { promptTokenCount: 100000, candidatesTokenCount: 50000, thoughtsTokenCount: 50000 } });
+        } else if (mode === "sse-usage" || mode === "sse-none") {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.write(`data: {"model":"gpt-4o","choices":[{"delta":{"content":"hi"}}]}\n\n`);
+          if (mode === "sse-usage" && body?.stream_options?.include_usage === true) {
+            res.write(`data: {"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":100000,"completion_tokens":10000}}\n\n`);
+          }
+          res.end("data: [DONE]\n\n");
+        } else {
+          json({ model: body.model, usage: { prompt_tokens: 10, completion_tokens: 10 } });
+        }
+      });
+    });
+    const spyPort = await listen(spy);
+    const spyProvider = (authHeader: string, format: (k: string) => string) => ({
+      baseUrl: `http://127.0.0.1:${spyPort}`,
+      authHeader,
+      format,
+      apiKey: REAL_KEY,
+    });
+    const capEgress = createEgressProxy({
+      config,
+      store,
+      prices: DEFAULT_MODEL_PRICES,
+      providers: {
+        openai: spyProvider("authorization", (k) => `Bearer ${k}`),
+        anthropic: spyProvider("x-api-key", (k) => k),
+        google: spyProvider("x-goog-api-key", (k) => k),
+      },
+    });
+    const capBase = `http://127.0.0.1:${await listen(capEgress)}`;
+    const send = async (token: string, path: string, body: unknown, spyMode = "") => {
+      const r = await fetch(`${capBase}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-hotcell-egress": token, ...(spyMode ? { "x-spy": spyMode } : {}) },
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      });
+      return { status: r.status, text: await r.text() };
+    };
+    const spend = (token: string) => store.resolveEgressTokenFull(token)!.spendUsd;
+    const lastSeen = () => seen[seen.length - 1]!;
+    const capSandbox = (id: string, egressSpendCapUsd?: number) => {
+      store.add({ ...rec, id, egressSpendCapUsd, usage: emptyUsage() });
+      return (policy: EgressPolicy = {}) => {
+        const t = SandboxStore.newEgressToken();
+        store.addEgressToken(t, id, policy);
+        return t;
+      };
+    };
+
+    try {
+      // a) Concurrency: 10 parallel gpt-4o calls, each reserving ~$0.30 (max_tokens
+      //    30000 × $10/M + its bytes × $2.5/M), against a $1 token cap and a $1
+      //    sandbox cap → exactly 3 admitted, 7 refused while those are in flight.
+      {
+        const mintA = capSandbox("sbxcapconc", 1);
+        const token = mintA({ spendCapUsd: 1 });
+        const body = { model: "gpt-4o", max_tokens: 30000, messages: [{ role: "user", content: "hi" }] };
+        const pending = Array.from({ length: 10 }, () => send(token, "/openai/v1/chat/completions", body, "hold"));
+        for (let i = 0; i < 100 && held.length < 3; i++) await new Promise((r) => setTimeout(r, 10));
+        await new Promise((r) => setTimeout(r, 50));
+        const parked = held;
+        held = [];
+        parked.forEach((f) => f());
+        const statuses = (await Promise.all(pending)).map((r) => r.status).sort();
+        assert.equal(parked.length, 3, "only 3 calls fit the cap concurrently");
+        assert.deepEqual(statuses, [200, 200, 200, 402, 402, 402, 402, 402, 402, 402]);
+        assert.ok(spend(token) <= 1, `token spend ${spend(token)} must stay under its $1 cap`);
+        assert.ok(store.get("sbxcapconc")!.usage.providerCost <= 1, "sandbox spend must stay under its $1 cap");
+        const after = await send(token, "/openai/v1/chat/completions", body);
+        assert.equal(after.status, 200, "reservations released once the calls finish");
+        ok("spend cap: concurrent burst → 3 admitted (worst case reserved), 7 → 402; reservations released after");
+      }
+
+      // b) One huge call: max_tokens 10M is clamped to the per-call ceiling, whose
+      //    worst case (128k × $75/M) can't fit a $1 cap → 402 before forwarding.
+      {
+        const token = mint({ spendCapUsd: 1 });
+        const before = seen.length;
+        const r = await send(token, "/anthropic/v1/messages", { model: "claude-opus-4", max_tokens: 10_000_000, messages: [] });
+        assert.equal(r.status, 402, "a call whose worst case exceeds the cap is refused");
+        assert.match(r.text, /^egress spend cap exceeded \(token\)/);
+        assert.equal(seen.length, before, "refused call never reaches the provider");
+        const big = mint({ spendCapUsd: 20 });
+        assert.equal((await send(big, "/anthropic/v1/messages", { model: "claude-opus-4", max_tokens: 10_000_000, messages: [] })).status, 200);
+        assert.equal(lastSeen().body.max_tokens, EGRESS_OUTPUT_TOKEN_CEILING, "explicit limit clamped to the ceiling");
+        ok("spend cap: max_tokens 10M → worst case > cap → 402; under a larger cap it's clamped to 128k");
+      }
+
+      // c) Unpriced model under a cap → 403; the same call uncapped is untouched.
+      {
+        const capped = await send(mint({ spendCapUsd: 5 }), "/openai/v1/chat/completions", { model: "gpt-unpriced-9", messages: [] });
+        assert.equal(capped.status, 403, "unpriced model refused under a cap");
+        assert.match(capped.text, /model not priced/);
+        const mintU = capSandbox("sbxcapproto", 5);
+        assert.equal((await send(mintU(), "/openai/v1/chat/completions", { model: "constructor", messages: [] })).status, 403, "prototype-key model ids are unpriced, not NaN");
+        assert.ok(Number.isFinite(store.get("sbxcapproto")!.usage.providerCost));
+        const raw = JSON.stringify({ model: "gpt-unpriced-9", messages: [] });
+        assert.equal((await send(mint(), "/openai/v1/chat/completions", raw)).status, 200, "uncapped → forwarded");
+        assert.equal(JSON.stringify(lastSeen().body), raw, "uncapped body forwarded unmodified");
+        ok("spend cap: unpriced model → 403 under a cap; uncapped call forwarded byte-for-byte");
+      }
+
+      // d) Gemini native: the model in the URL path is allowlisted + priced,
+      //    `usageMetadata` (incl. thoughts) is metered, maxOutputTokens injected.
+      {
+        const path = "/google/v1beta/models/gemini-2.5-pro:generateContent";
+        const scoped = mint({ models: ["gemini-2.0-flash"] });
+        assert.equal((await send(scoped, path, { contents: [] }, "gemini")).status, 403, "path model checked against the allowlist");
+        const token = mint({ spendCapUsd: 5, models: ["gemini-2.0-flash"] });
+        const r = await send(token, "/google/v1beta/models/gemini-2.0-flash:generateContent", { contents: [] }, "gemini");
+        assert.equal(r.status, 200);
+        assert.equal(lastSeen().body.generationConfig.maxOutputTokens, config.egressMaxOutputTokens, "output limit injected under a cap");
+        const expected = (100000 * 0.1 + 100000 * 0.4) / 1e6; // gemini-2.0-flash: 100k in, 50k out + 50k thoughts
+        assert.ok(Math.abs(spend(token) - expected) < 1e-12, `gemini cost ${spend(token)} != ${expected}`);
+        ok("gemini native: path model allowlisted + priced, usageMetadata (with thoughts) metered");
+      }
+
+      // e) OpenAI chat streaming under a cap: include_usage is requested and the
+      //    usage frame metered; a stream that still reports none is charged its
+      //    full reservation instead of $0.
+      {
+        const token = mint({ spendCapUsd: 5 });
+        const r = await send(token, "/openai/v1/chat/completions", { model: "gpt-4o", stream: true, max_tokens: 1000, messages: [] }, "sse-usage");
+        assert.equal(r.status, 200);
+        assert.equal(lastSeen().body.stream_options?.include_usage, true, "include_usage requested");
+        const expected = (100000 * 2.5 + 10000 * 10) / 1e6;
+        assert.ok(Math.abs(spend(token) - expected) < 1e-12, `stream cost ${spend(token)} != ${expected}`);
+        const t2 = mint({ spendCapUsd: 5 });
+        const r2 = await send(t2, "/openai/v1/chat/completions", { model: "gpt-4o", stream: true, max_tokens: 1000, messages: [] }, "sse-none");
+        assert.equal(r2.status, 200);
+        const fwdBytes = Buffer.byteLength(JSON.stringify(lastSeen().body));
+        const reservation = (fwdBytes * 2.5 + 1000 * 10) / 1e6;
+        assert.ok(Math.abs(spend(t2) - reservation) < 1e-12, `usage-less stream charged ${spend(t2)}, want reservation ${reservation}`);
+        const t3 = mint();
+        await send(t3, "/openai/v1/chat/completions", { model: "gpt-4o", stream: true, messages: [] }, "sse-none");
+        assert.equal(lastSeen().body.stream_options, undefined, "uncapped stream not rewritten");
+        ok("openai stream under a cap: include_usage injected + metered; usage-less stream charged its reservation");
+      }
+    } finally {
+      capEgress.close();
+      spy.close();
+    }
   }
 
   console.log(`\negress-check: ${passed} checks passed`);

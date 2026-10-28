@@ -1,4 +1,4 @@
-module github.com/sinameraji/hotcell/agent
+module github.com/directionally-local/hotcell/agent
 
 go 1.26
 

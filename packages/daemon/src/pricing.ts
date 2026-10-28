@@ -72,13 +72,27 @@ export function loadModelPrices(path: string): ModelPrices {
   }
 }
 
-/** Resolve a model's price: exact (lower-cased) match, else longest prefix match. */
+/**
+ * Resolve a model's price: exact (lower-cased) match, else longest prefix match.
+ * A vendor-qualified id (`anthropic/claude-sonnet-4`, `models/gemini-2.5-pro`)
+ * that matches nothing as-is is retried without its `vendor/` prefix.
+ */
 export function priceFor(model: string, prices: ModelPrices): ModelPrice | undefined {
   const key = model.toLowerCase();
-  if (prices[key]) return prices[key];
+  const hit = lookupPrice(key, prices);
+  if (hit) return hit;
+  const slash = key.lastIndexOf("/");
+  return slash >= 0 ? lookupPrice(key.slice(slash + 1), prices) : undefined;
+}
+
+function lookupPrice(key: string, prices: ModelPrices): ModelPrice | undefined {
+  if (!key) return undefined;
+  // Own properties only: a model id like `constructor` must not resolve to an
+  // Object.prototype member (a non-price that would compute NaN cost).
+  if (Object.hasOwn(prices, key)) return prices[key];
   let best: { name: string; price: ModelPrice } | undefined;
   for (const [name, price] of Object.entries(prices)) {
-    if (key.startsWith(name) && (!best || name.length > best.name.length)) {
+    if (name && key.startsWith(name) && (!best || name.length > best.name.length)) {
       best = { name, price };
     }
   }
@@ -86,9 +100,10 @@ export function priceFor(model: string, prices: ModelPrices): ModelPrice | undef
 }
 
 /**
- * Compute an LLM call's USD cost from token counts. Returns 0 (and warns once per
- * unknown model) when the model isn't priced — so a gap is observable rather than
- * silently billed as free.
+ * Compute an LLM call's USD cost from token counts. Returns 0 (and warns) when the
+ * model isn't priced — so a gap is observable. Under a spend cap the egress
+ * gateway never relies on that 0: it refuses unpriced models up front (see
+ * `proxy/egress.ts`).
  */
 export function computeModelCost(
   model: string | undefined,
