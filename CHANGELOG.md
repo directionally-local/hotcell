@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.32](https://github.com/directionally-local/hotcell/compare/v0.1.31...v0.1.32) (2026-10-28)
+
+
+### Fixes
+
+* **container:** support authenticated TCP agent transport ([#44](https://github.com/directionally-local/hotcell/issues/44)) ([08bc316](https://github.com/directionally-local/hotcell/commit/08bc316786832f3739249b1a6281d82ef529caa1))
+
 ## [0.1.31](https://github.com/directionally-local/hotcell/compare/v0.1.30...v0.1.31) (2026-10-28)
 
 
