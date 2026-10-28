@@ -75,7 +75,7 @@ On a fresh Ubuntu bare-metal host with Docker, Node ≥22, Firecracker + `/dev/k
 
 ```bash
 # one-time: clone hotcell, build the guest agent to a reboot-persistent path
-git clone https://github.com/sinameraji/hotcell.git ~/hotcell
+git clone https://github.com/directionally-local/hotcell.git ~/hotcell
 (cd ~/hotcell/agent && GOOS=linux GOARCH=amd64 go build -o ~/hotcell-agent-linux-amd64 ./cmd/hotcell-agent)
 
 # memory ladder (fixed 8 vCPU), 3 cold runs per rung (14336 = the 14 GiB rung):

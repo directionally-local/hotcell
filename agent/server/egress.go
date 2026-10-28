@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/sinameraji/hotcell/agent/proto"
+	"github.com/directionally-local/hotcell/agent/proto"
 )
 
 // Egress-over-vsock: how a NIC-less microVM reaches the daemon's egress gateway

@@ -41,7 +41,7 @@ SUMMARY="$OUTDIR/summary.tsv"
 printf 'mem_mb\tcpus\trep\tresult\tclone_ms\tinstall_ms\ttypecheck_ms\ttotal_ms\tpeak_used_gib\tegress\n' > "$SUMMARY"
 LOG(){ echo "[suite $(date -u +%H:%M:%S)] $*"; }
 
-cd ~/hotcell 2>/dev/null || { cd ~; rm -rf hotcell; git clone -q https://github.com/sinameraji/hotcell.git; cd hotcell; }
+cd ~/hotcell 2>/dev/null || { cd ~; rm -rf hotcell; git clone -q https://github.com/directionally-local/hotcell.git; cd hotcell; }
 if [ "$SKIP_BUILD" != 1 ]; then
   LOG "build"; git fetch -q origin main && git reset --hard -q origin/main
   npm install --no-audit --no-fund >/dev/null 2>&1; npm run build >/dev/null 2>&1

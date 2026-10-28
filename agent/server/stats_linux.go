@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sinameraji/hotcell/agent/proto"
+	"github.com/directionally-local/hotcell/agent/proto"
 )
 
 // readStats reads the guest's resource usage from /proc and the cgroup

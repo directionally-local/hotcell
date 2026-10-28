@@ -1,6 +1,6 @@
 # hotcell (Python SDK)
 
-Dependency-free Python client for the [hotcell](https://github.com/sinameraji/hotcell)
+Dependency-free Python client for the [hotcell](https://github.com/directionally-local/hotcell)
 self-hostable agent sandbox daemon. Mirrors the TypeScript SDK surface (snake_cased)
 so the same workflows work from either language.
 

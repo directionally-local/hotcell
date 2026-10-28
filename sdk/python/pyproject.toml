@@ -14,7 +14,7 @@ keywords = ["sandbox", "ai-agents", "hotcell"]
 
 [project.urls]
 Homepage = "https://directionallylocal.com/hotcell/"
-Repository = "https://github.com/sinameraji/hotcell"
+Repository = "https://github.com/directionally-local/hotcell"
 
 [tool.setuptools.packages.find]
 where = ["."]

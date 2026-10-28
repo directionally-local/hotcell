@@ -28,7 +28,7 @@
   "homepage": "https://directionallylocal.com/hotcell/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sinameraji/hotcell.git"
+    "url": "git+https://github.com/directionally-local/hotcell.git"
   },
   "publishConfig": {
     "access": "public"
@@ -48,7 +48,7 @@
     "typescript": "^7.0.2"
   },
   "bugs": {
-    "url": "https://github.com/sinameraji/hotcell/issues"
+    "url": "https://github.com/directionally-local/hotcell/issues"
   },
   "engines": {
     "node": ">=18"
