@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import Docker from "dockerode";
 import { gatewayOf } from "../net/firewall.js";
 import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
@@ -19,9 +20,10 @@ import { log } from "../logger.js";
  *
  * The container is named deterministically from the sandbox id. A static Linux
  * `hotcell-agent` runs as PID 1 and serves exec/files/process/terminal operations
- * over a per-sandbox unix socket bind-mounted to the daemon host. Docker remains
- * responsible for container lifecycle, workspace volumes, resource limits, and
- * networking.
+ * over a per-sandbox Unix socket on Linux, or an authenticated loopback TCP port
+ * on non-Linux Docker hosts where bind-mounted Unix sockets are not forwarded.
+ * Docker remains responsible for lifecycle, workspace volumes, resource limits,
+ * and networking.
  */
 /** Egress-enforcement network settings, passed in from config by the driver factory. */
 export interface EgressNetConfig {
@@ -30,6 +32,14 @@ export interface EgressNetConfig {
   subnet: string;
   /** Pinned DNS resolver IP, or "" for Docker's embedded resolver. */
   dns: string;
+}
+
+const AGENT_TCP_PORT = 49173;
+
+interface TcpAgentEndpoint {
+  host: string;
+  port: number;
+  token: string;
 }
 
 export class ContainerDriver extends AgentDriver {
@@ -43,21 +53,63 @@ export class ContainerDriver extends AgentDriver {
   private egressIpRefresh?: Promise<void>;
   private readonly agentBaseDir: string;
   private readonly configuredAgentBin?: string;
+  private readonly agentTransport: "unix" | "tcp";
+  private readonly agentTcpEndpoints = new Map<string, TcpAgentEndpoint>();
 
   constructor(
     docker?: Docker,
     egress?: EgressNetConfig,
-    agent?: { baseDir?: string; binaryPath?: string },
+    agent?: { baseDir?: string; binaryPath?: string; transport?: "unix" | "tcp" },
   ) {
     super();
     this.docker = docker ?? new Docker();
     this.egress = egress;
     this.agentBaseDir = agent?.baseDir ?? join(tmpdir(), `hotcell-agent-${process.getuid?.() ?? "user"}`);
     this.configuredAgentBin = agent?.binaryPath;
+    // Docker Desktop/Colima/OrbStack on macOS do not reliably forward AF_UNIX
+    // sockets through bind mounts. Publish an authenticated loopback TCP port there.
+    this.agentTransport = agent?.transport ?? (process.platform === "linux" ? "unix" : "tcp");
   }
 
-  protected openConn(id: string): Promise<AgentConn> {
+  protected async openConn(id: string): Promise<AgentConn> {
+    if (this.agentTransport === "tcp") {
+      const endpoint = await this.resolveAgentTcpEndpoint(id);
+      return AgentConn.connectTcp({ ...endpoint, timeoutMs: 15000 });
+    }
     return AgentConn.connect({ path: this.agentSocketPath(id), timeoutMs: 15000 });
+  }
+
+  private async resolveAgentTcpEndpoint(id: string): Promise<TcpAgentEndpoint> {
+    const cached = this.agentTcpEndpoints.get(id);
+    if (cached) return cached;
+    const inspect = await this.docker.getContainer(this.containerName(id)).inspect();
+    return this.cacheAgentTcpEndpoint(id, inspect);
+  }
+
+  private async captureAgentTcpEndpoint(
+    id: string,
+    container: { inspect(): Promise<unknown> },
+    token: string,
+  ): Promise<void> {
+    const inspect = await container.inspect();
+    this.cacheAgentTcpEndpoint(id, inspect, token);
+  }
+
+  private cacheAgentTcpEndpoint(id: string, inspect: unknown, fallbackToken?: string): TcpAgentEndpoint {
+    const details = inspect as {
+      Config?: { Env?: string[] };
+      NetworkSettings?: { Ports?: Record<string, Array<{ HostPort?: string }> | null> };
+    };
+    const tokenEntry = details.Config?.Env?.find((entry) => entry.startsWith("HOTCELL_AGENT_TOKEN="));
+    const token = fallbackToken ?? tokenEntry?.slice("HOTCELL_AGENT_TOKEN=".length);
+    const hostPort = details.NetworkSettings?.Ports?.[`${AGENT_TCP_PORT}/tcp`]?.[0]?.HostPort;
+    const port = Number(hostPort);
+    if (!token || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`container driver: missing authenticated TCP agent endpoint for sandbox ${id}`);
+    }
+    const endpoint = { host: "127.0.0.1", port, token };
+    this.agentTcpEndpoints.set(id, endpoint);
+    return endpoint;
   }
 
   private agentSocketDir(id: string): string {
@@ -69,6 +121,7 @@ export class ContainerDriver extends AgentDriver {
   }
 
   private cleanupAgentSocket(id: string): void {
+    this.agentTcpEndpoints.delete(id);
     rmSync(this.agentSocketDir(id), { recursive: true, force: true });
   }
 
@@ -86,8 +139,8 @@ export class ContainerDriver extends AgentDriver {
     const candidates = override
       ? [resolve(override)]
       : [
-          join(moduleDir, "..", "agent-assets", filename),
           resolve(moduleDir, "../../../../agent/dist", filename),
+          join(moduleDir, "..", "agent-assets", filename),
         ];
     const binary = candidates.find((candidate) => existsSync(candidate));
     if (!binary) {
@@ -422,6 +475,8 @@ export class ContainerDriver extends AgentDriver {
     await this.ensureImage(opts.image);
     const agentBinary = await this.resolveAgentBinary();
     const persist = opts.persist ?? true;
+    const useTcp = this.agentTransport === "tcp";
+    const token = useTcp ? randomBytes(32).toString("hex") : undefined;
     if (persist) await this.ensureVolume(opts.id);
     // Under egress enforcement, put the sandbox on the dedicated bridge network
     // (whose egress is locked down by the host firewall) and pin its DNS resolver.
@@ -429,20 +484,31 @@ export class ContainerDriver extends AgentDriver {
     if (enforced) await this.ensureEgressNetwork();
 
     const socketDir = this.agentSocketDir(opts.id);
-    mkdirSync(socketDir, { recursive: true, mode: 0o700 });
-    chmodSync(socketDir, 0o700);
-    if (Buffer.byteLength(this.agentSocketPath(opts.id)) > 100) {
-      this.cleanupAgentSocket(opts.id);
-      throw new Error(`container driver: agent socket path is too long for sandbox ${opts.id}`);
+    if (!useTcp) {
+      mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+      chmodSync(socketDir, 0o700);
+      if (Buffer.byteLength(this.agentSocketPath(opts.id)) > 100) {
+        this.cleanupAgentSocket(opts.id);
+        throw new Error(`container driver: agent socket path is too long for sandbox ${opts.id}`);
+      }
     }
+    // These variables are reserved for the transport and cannot be user-overridden.
+    const sandboxEnv = { ...opts.env };
+    delete sandboxEnv.HOTCELL_AGENT_LISTEN;
+    delete sandboxEnv.SBX_AGENT_LISTEN;
+    delete sandboxEnv.HOTCELL_AGENT_TOKEN;
+    delete sandboxEnv.SBX_AGENT_TOKEN;
     const env = Object.entries({
-      ...opts.env,
-      HOTCELL_AGENT_LISTEN: "unix:///run/hotcell/a.sock",
+      ...sandboxEnv,
+      HOTCELL_AGENT_LISTEN: useTcp
+        ? `tcp://0.0.0.0:${AGENT_TCP_PORT}`
+        : "unix:///run/hotcell/a.sock",
+      ...(token ? { HOTCELL_AGENT_TOKEN: token } : {}),
     }).map(([k, v]) => `${k}=${v}`);
     const binds = [
       ...(persist ? [`${this.volumeName(opts.id)}:/workspace`] : []),
       `${agentBinary}:/hotcell-agent:ro`,
-      `${socketDir}:/run/hotcell`,
+      ...(!useTcp ? [`${socketDir}:/run/hotcell`] : []),
     ];
     let created = false;
     try {
@@ -454,9 +520,17 @@ export class ContainerDriver extends AgentDriver {
         Env: env,
         Labels: { "sbx.managed": "true", "sbx.id": opts.id, ...opts.labels },
         WorkingDir: "/workspace",
+        ...(useTcp ? { ExposedPorts: { [`${AGENT_TCP_PORT}/tcp`]: {} } } : {}),
         HostConfig: {
           AutoRemove: false,
           Binds: binds,
+          ...(useTcp
+            ? {
+                PortBindings: {
+                  [`${AGENT_TCP_PORT}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: "" }],
+                },
+              }
+            : {}),
           ...(enforced ? { NetworkMode: this.egress!.network } : {}),
           ...(enforced && this.egress!.dns ? { Dns: [this.egress!.dns] } : {}),
           ExtraHosts: ["host.docker.internal:host-gateway"],
@@ -465,6 +539,7 @@ export class ContainerDriver extends AgentDriver {
       });
       created = true;
       await container.start();
+      if (useTcp) await this.captureAgentTcpEndpoint(opts.id, container, token!);
       await this.waitForAgent(opts.id);
     } catch (err) {
       if (created) {

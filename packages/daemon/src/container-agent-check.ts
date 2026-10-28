@@ -56,6 +56,7 @@ async function main(): Promise<void> {
     const driver = new ContainerDriver(fakeDocker, undefined, {
       baseDir: agentBaseDir,
       binaryPath: binary,
+      transport: "unix",
     });
     await driver.create({
       id,
