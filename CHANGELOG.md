@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.31](https://github.com/directionally-local/hotcell/compare/v0.1.30...v0.1.31) (2026-10-28)
+
+
+### Performance
+
+* **container:** route sandbox operations through guest agent ([#41](https://github.com/directionally-local/hotcell/issues/41)) ([05bf6d5](https://github.com/directionally-local/hotcell/commit/05bf6d506fe833374f3b840ae9d5ef702992c490))
+
 ## [0.1.30](https://github.com/sinameraji/hotcell/compare/v0.1.29...v0.1.30) (2026-10-24)
 
 
