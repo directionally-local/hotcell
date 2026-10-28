@@ -139,6 +139,16 @@ func TestFileRoundTrip(t *testing.T) {
 	if _, _, res := tc.collect(tc.call(proto.Request{Method: "writeFile", Path: file, Content: "hello agent"})); !res.OK {
 		t.Fatalf("writeFile: %+v", res)
 	}
+	badFile := filepath.Join(sub, "bad-mode.txt")
+	_, _, badMode := tc.collect(tc.call(proto.Request{
+		Method: "writeFile", Path: badFile, Content: "must not be written", Mode: "777; touch /tmp/PWNED #",
+	}))
+	if badMode.OK {
+		t.Fatal("writeFile accepted a non-octal mode")
+	}
+	if _, err := os.Stat(badFile); !os.IsNotExist(err) {
+		t.Fatalf("invalid-mode write created file: stat err = %v", err)
+	}
 	_, _, res := tc.collect(tc.call(proto.Request{Method: "readFile", Path: file}))
 	if !res.OK || res.Value.(string) != "hello agent" {
 		t.Fatalf("readFile = %+v, want 'hello agent'", res)

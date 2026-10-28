@@ -1722,6 +1722,13 @@ async function handleFileAction(
         if (typeof body.content !== "string") {
           return sendJson(res, 400, { error: "content is required" });
         }
+        if (
+          body.mode !== undefined &&
+          body.mode !== null &&
+          (typeof body.mode !== "string" || (body.mode !== "" && !/^[0-7]{3,4}$/.test(body.mode)))
+        ) {
+          return sendJson(res, 400, { error: "mode must be a 3- or 4-digit octal permission string" });
+        }
         await driver.writeFile(id, {
           path,
           content: body.content,
@@ -1888,11 +1895,18 @@ async function waitForPort(
   if (!Number.isInteger(port) || port <= 0) {
     return sendJson(res, 400, { error: "port is required" });
   }
+  if (body.host !== undefined && body.host !== null && typeof body.host !== "string") {
+    return sendJson(res, 400, { error: "host must be a hostname or IP address" });
+  }
+  const host = typeof body.host === "string" ? body.host : undefined;
+  if (host && !/^[A-Za-z0-9._:-]+$/.test(host)) {
+    return sendJson(res, 400, { error: "host must be a hostname or IP address" });
+  }
   try {
     const ready = await driver.waitForPort(id, port, {
       timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
       intervalMs: typeof body.intervalMs === "number" ? body.intervalMs : undefined,
-      host: typeof body.host === "string" ? body.host : undefined,
+      host,
     });
     return sendJson(res, 200, { ready });
   } catch (err) {

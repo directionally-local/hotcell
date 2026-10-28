@@ -191,7 +191,7 @@ export class AgentConn {
 
   // --- Driver-surface RPCs --------------------------------------------------
 
-  /** Run a command, streaming stdout/stderr as ExecEvents; resolves with exit code. */
+  /** Run a command, streaming stdout/stderr and the terminal exit event. */
   async exec(
     command: string,
     opts: { cwd?: string; env?: Record<string, string> },
@@ -205,7 +205,9 @@ export class AgentConn {
       },
     );
     const r = await done;
-    return r.exitCode ?? 0;
+    const exitCode = r.exitCode ?? 0;
+    onEvent({ type: "exit", exitCode });
+    return exitCode;
   }
 
   async writeFile(path: string, content: string, mode?: string): Promise<void> {

@@ -75,6 +75,7 @@ async function main(): Promise<void> {
 
     let stdout = "";
     let stderr = "";
+    let exitEventCode: number | undefined;
     const exitCode = await driver.exec(
       id,
       "printf '%s' \"$HOTCELL_CHECK_CREATE_ENV\"; printf 'stderr-ok' >&2",
@@ -82,9 +83,11 @@ async function main(): Promise<void> {
       (event) => {
         if (event.type === "stdout") stdout += event.data;
         if (event.type === "stderr") stderr += event.data;
+        if (event.type === "exit") exitEventCode = event.exitCode;
       },
     );
     assert.equal(exitCode, 0);
+    assert.equal(exitEventCode, 0, "exec emits its terminal exit event");
     assert.equal(stdout, "create-env-ok");
     assert.equal(stderr, "stderr-ok");
 
