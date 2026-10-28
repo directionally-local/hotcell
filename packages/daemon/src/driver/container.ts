@@ -1,7 +1,17 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import Docker from "dockerode";
 import { gatewayOf } from "../net/firewall.js";
-import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,11 +45,37 @@ export interface EgressNetConfig {
 }
 
 const AGENT_TCP_PORT = 49173;
+const POOL_FILL_CONCURRENCY = 4;
 
 interface TcpAgentEndpoint {
   host: string;
   port: number;
   token: string;
+}
+
+interface ContainerPoolConfig {
+  depth: number;
+  image: string;
+  limits: ResourceLimits;
+  reservationMb: number;
+  stateDir: string;
+}
+
+interface ContainerPoolSpare {
+  id: string;
+  containerName: string;
+  workspaceVolume: string;
+  socketDir: string;
+}
+
+interface ContainerInspect {
+  Config?: { Env?: string[]; Labels?: Record<string, string> };
+  Mounts?: Array<{ Type?: string; Name?: string; Source?: string; Destination?: string }>;
+  NetworkSettings?: {
+    Ports?: Record<string, Array<{ HostPort?: string }> | null>;
+    Networks?: Record<string, { IPAddress?: string }>;
+  };
+  State?: { Running?: boolean };
 }
 
 export class ContainerDriver extends AgentDriver {
@@ -55,11 +91,25 @@ export class ContainerDriver extends AgentDriver {
   private readonly configuredAgentBin?: string;
   private readonly agentTransport: "unix" | "tcp";
   private readonly agentTcpEndpoints = new Map<string, TcpAgentEndpoint>();
+  private readonly agentSocketDirs = new Map<string, string>();
+  private readonly workspaceVolumes = new Map<string, string>();
+  private poolTarget: number;
+  private readonly poolImage: string;
+  private readonly poolLimits: ResourceLimits;
+  private readonly poolReservationMb: number;
+  private readonly poolStateDir: string;
+  private readonly workspaceVolumeMapDir: string;
+  private pool: ContainerPoolSpare[] = [];
+  private poolInitializing = false;
+  private inFlightFills = 0;
+  private fillBackoffUntil = 0;
+  private fillBackoffMs = 0;
 
   constructor(
     docker?: Docker,
     egress?: EgressNetConfig,
     agent?: { baseDir?: string; binaryPath?: string; transport?: "unix" | "tcp" },
+    pool?: ContainerPoolConfig,
   ) {
     super();
     this.docker = docker ?? new Docker();
@@ -69,6 +119,16 @@ export class ContainerDriver extends AgentDriver {
     // Docker Desktop/Colima/OrbStack on macOS do not reliably forward AF_UNIX
     // sockets through bind mounts. Publish an authenticated loopback TCP port there.
     this.agentTransport = agent?.transport ?? (process.platform === "linux" ? "unix" : "tcp");
+    this.poolTarget = Math.max(0, pool?.depth ?? 0);
+    this.poolImage = pool?.image ?? "python:3.11-slim-bookworm";
+    this.poolLimits = pool?.limits ?? {};
+    this.poolReservationMb = Math.max(0, pool?.reservationMb ?? 256);
+    this.poolStateDir = pool?.stateDir ?? join(this.agentBaseDir, "pool-state");
+    this.workspaceVolumeMapDir = join(this.poolStateDir, "workspace-volumes");
+    if (this.poolTarget > 0 || typeof this.docker.listContainers === "function") {
+      this.poolInitializing = this.poolTarget > 0;
+      void this.initializePool();
+    }
   }
 
   protected async openConn(id: string): Promise<AgentConn> {
@@ -76,7 +136,26 @@ export class ContainerDriver extends AgentDriver {
       const endpoint = await this.resolveAgentTcpEndpoint(id);
       return AgentConn.connectTcp({ ...endpoint, timeoutMs: 15000 });
     }
-    return AgentConn.connect({ path: this.agentSocketPath(id), timeoutMs: 15000 });
+    const socketPath = await this.resolveAgentSocketPath(id);
+    return AgentConn.connect({ path: socketPath, timeoutMs: 15000 });
+  }
+
+  private async resolveAgentSocketPath(id: string): Promise<string> {
+    const cached = this.agentSocketDirs.get(id);
+    if (cached) return join(cached, "a.sock");
+    try {
+      const inspect = await this.docker.getContainer(this.containerName(id)).inspect();
+      this.rememberAgentSocketDir(id, inspect);
+    } catch {
+      /* fall through to the deterministic cold-create path */
+    }
+    return this.agentSocketPath(id);
+  }
+
+  private rememberAgentSocketDir(id: string, inspect: unknown): void {
+    const details = inspect as ContainerInspect;
+    const source = details.Mounts?.find((mount) => mount.Destination === "/run/hotcell")?.Source;
+    if (source) this.agentSocketDirs.set(id, source);
   }
 
   private async resolveAgentTcpEndpoint(id: string): Promise<TcpAgentEndpoint> {
@@ -122,7 +201,9 @@ export class ContainerDriver extends AgentDriver {
 
   private cleanupAgentSocket(id: string): void {
     this.agentTcpEndpoints.delete(id);
-    rmSync(this.agentSocketDir(id), { recursive: true, force: true });
+    const socketDir = this.agentSocketDirs.get(id) ?? this.agentSocketDir(id);
+    this.agentSocketDirs.delete(id);
+    rmSync(socketDir, { recursive: true, force: true });
   }
 
   private async resolveAgentBinary(): Promise<string> {
@@ -227,6 +308,7 @@ export class ContainerDriver extends AgentDriver {
   private async refreshEgressIpCache(): Promise<void> {
     type ContainerNetworkInfo = {
       Labels?: Record<string, string>;
+      Names?: string[];
       NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> };
     };
     try {
@@ -236,7 +318,15 @@ export class ContainerDriver extends AgentDriver {
       }) as unknown as ContainerNetworkInfo[];
       const refreshed = new Map<string, string>();
       for (const container of containers) {
-        const sandboxId = container.Labels?.["sbx.id"] ?? container.Labels?.["hotcell.id"];
+        let sandboxId = container.Labels?.["sbx.id"] ?? container.Labels?.["hotcell.id"];
+        if (!sandboxId) {
+          const name = container.Names?.map((n) => n.startsWith("/") ? n.slice(1) : n).find((n) => n.startsWith("sbx-"));
+          const suffix = name?.slice("sbx-".length);
+          const isUnadoptedSpare =
+            container.Labels?.["hotcell.pool"] === "true" &&
+            container.Labels?.["hotcell.pool.slot"] === suffix;
+          if (suffix && !isUnadoptedSpare) sandboxId = suffix;
+        }
         if (!sandboxId) continue;
         for (const network of Object.values(container.NetworkSettings?.Networks ?? {})) {
           if (network.IPAddress) refreshed.set(network.IPAddress, sandboxId);
@@ -350,12 +440,77 @@ export class ContainerDriver extends AgentDriver {
   }
 
   /** Create the workspace volume if it does not already exist (idempotent). */
-  private async ensureVolume(id: string): Promise<void> {
-    const name = this.volumeName(id);
+  private async ensureVolume(id: string, name = this.volumeName(id), poolSlot?: string): Promise<void> {
     await this.docker.createVolume({
       Name: name,
-      Labels: { "sbx.managed": "true", "sbx.id": id },
+      Labels: poolSlot
+        ? { "sbx.managed": "true", "hotcell.pool": "true", "hotcell.pool.slot": poolSlot }
+        : { "sbx.managed": "true", "sbx.id": id },
     });
+  }
+
+  private workspaceVolumeMapPath(id: string): string {
+    const key = createHash("sha256").update(id).digest("hex");
+    return join(this.workspaceVolumeMapDir, `${key}.json`);
+  }
+
+  private workspaceVolumeFor(id: string): string | undefined {
+    const cached = this.workspaceVolumes.get(id);
+    if (cached) return cached;
+    try {
+      const value = JSON.parse(readFileSync(this.workspaceVolumeMapPath(id), "utf8")) as {
+        id?: unknown;
+        volume?: unknown;
+      };
+      if (
+        value.id === id &&
+        typeof value.volume === "string" &&
+        /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value.volume)
+      ) {
+        this.workspaceVolumes.set(id, value.volume);
+        return value.volume;
+      }
+    } catch {
+      /* no mapped pool volume */
+    }
+    return undefined;
+  }
+
+  private persistWorkspaceVolume(id: string, volume: string): void {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(volume)) {
+      throw new Error(`container driver: invalid workspace volume name for sandbox ${id}`);
+    }
+    mkdirSync(this.workspaceVolumeMapDir, { recursive: true, mode: 0o700 });
+    chmodSync(this.workspaceVolumeMapDir, 0o700);
+    const target = this.workspaceVolumeMapPath(id);
+    const temp = `${target}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+    writeFileSync(temp, JSON.stringify({ id, volume }), { encoding: "utf8", mode: 0o600, flag: "wx" });
+    renameSync(temp, target);
+    chmodSync(target, 0o600);
+    this.workspaceVolumes.set(id, volume);
+  }
+
+  private forgetWorkspaceVolume(id: string): void {
+    this.workspaceVolumes.delete(id);
+    try {
+      unlinkSync(this.workspaceVolumeMapPath(id));
+    } catch {
+      /* no mapping */
+    }
+  }
+
+  private workspaceVolumeFromInspect(inspect: unknown): string | undefined {
+    const details = inspect as ContainerInspect;
+    return details.Mounts?.find((mount) => mount.Destination === "/workspace" && mount.Type === "volume")?.Name;
+  }
+
+  private async removeWorkspaceVolume(name: string | undefined): Promise<void> {
+    if (!name) return;
+    try {
+      await this.docker.getVolume(name).remove({ force: true });
+    } catch (err: unknown) {
+      if (!isNotFound(err)) throw err;
+    }
   }
 
   /** Pull the image if it is not already present locally. */
@@ -377,9 +532,181 @@ export class ContainerDriver extends AgentDriver {
     this.ensured.add(image);
   }
 
+  /** Ready spares and the pool target's reserved memory for admission control. */
+  poolStats(): { spares: number; reservedMb: number } {
+    const perSpareMb = this.poolLimits.memoryMb && this.poolLimits.memoryMb > 0
+      ? this.poolLimits.memoryMb
+      : this.poolReservationMb;
+    return { spares: this.pool.length, reservedMb: this.poolTarget * perSpareMb };
+  }
+
+  /** Number of pre-started spare containers currently ready for adoption. */
+  poolSize(): number {
+    return this.pool.length;
+  }
+
+  private async initializePool(): Promise<void> {
+    try {
+      await this.removeStalePoolSpares();
+    } catch (err) {
+      if (this.poolTarget > 0) this.recordPoolFailure(err);
+      else log.warn("container warm pool: could not remove stale spares", { error: (err as Error)?.message ?? String(err) });
+    } finally {
+      this.poolInitializing = false;
+      this.fillPool();
+    }
+  }
+
+  private async removeStalePoolSpares(): Promise<void> {
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: { label: ["hotcell.pool=true"] },
+    }) as Array<{ Id?: string; Names?: string[]; Labels?: Record<string, string> }>;
+    for (const summary of containers) {
+      const name = summary.Names?.map((n) => n.startsWith("/") ? n.slice(1) : n).find((n) => n.startsWith("sbx-"));
+      const suffix = name?.slice("sbx-".length);
+      if (!name || summary.Labels?.["hotcell.pool.slot"] !== suffix) continue; // adopted spares have a sandbox-name suffix
+      const id = name.slice("sbx-".length);
+      const container = this.docker.getContainer(summary.Id ?? name);
+      let volume = this.volumeName(id);
+      let socketDir = this.agentSocketDir(id);
+      try {
+        const inspect = await container.inspect();
+        volume = this.workspaceVolumeFromInspect(inspect) ?? volume;
+        const source = (inspect as ContainerInspect).Mounts?.find((m) => m.Destination === "/run/hotcell")?.Source;
+        if (source) socketDir = source;
+      } catch {
+        /* removal below is idempotent */
+      }
+      await this.removeContainerIdempotent(summary.Id ?? name);
+      await this.removeWorkspaceVolume(volume).catch(() => {});
+      rmSync(socketDir, { recursive: true, force: true });
+      this.agentTcpEndpoints.delete(id);
+      this.agentSocketDirs.delete(id);
+    }
+  }
+
+  private poolShapeMatches(want?: ResourceLimits): boolean {
+    return (
+      (want?.memoryMb ?? 0) === (this.poolLimits.memoryMb ?? 0) &&
+      (want?.cpus ?? 0) === (this.poolLimits.cpus ?? 0) &&
+      (want?.pidsLimit ?? 0) === (this.poolLimits.pidsLimit ?? 0)
+    );
+  }
+
+  private fillPool(): void {
+    if (this.poolTarget <= 0 || this.poolInitializing || Date.now() < this.fillBackoffUntil) return;
+    const missing = this.poolTarget - this.pool.length - this.inFlightFills;
+    const count = Math.min(missing, POOL_FILL_CONCURRENCY - this.inFlightFills);
+    for (let i = 0; i < count; i++) void this.fillOne();
+  }
+
+  private async fillOne(): Promise<void> {
+    this.inFlightFills++;
+    const id = `pool-${randomBytes(8).toString("hex")}`;
+    const spare: ContainerPoolSpare = {
+      id,
+      containerName: this.containerName(id),
+      workspaceVolume: this.volumeName(id),
+      socketDir: this.agentSocketDir(id),
+    };
+    try {
+      await this.launchContainer(
+        { id, image: this.poolImage, persist: true, limits: this.poolLimits },
+        { skipPool: true, poolSlot: id },
+      );
+      if (this.poolTarget <= 0) {
+        await this.removePoolSpare(spare);
+        return;
+      }
+      this.pool.push(spare);
+      this.fillBackoffMs = 0;
+      log.info("container warm pool: spare ready", { size: this.pool.length, target: this.poolTarget });
+    } catch (err) {
+      await this.removePoolSpare(spare).catch(() => {});
+      this.recordPoolFailure(err);
+    } finally {
+      this.inFlightFills--;
+      this.fillPool();
+    }
+  }
+
+  private recordPoolFailure(err: unknown): void {
+    this.fillBackoffMs = Math.min(Math.max(this.fillBackoffMs * 2, 5000), 60_000);
+    this.fillBackoffUntil = Date.now() + this.fillBackoffMs;
+    log.warn("container warm pool: spare creation failed", {
+      error: (err as Error)?.message ?? String(err),
+      retryInMs: this.fillBackoffMs,
+    });
+    setTimeout(() => this.fillPool(), this.fillBackoffMs + 50).unref();
+  }
+
+  private async removePoolSpare(spare: ContainerPoolSpare): Promise<void> {
+    await this.removeContainerIdempotent(spare.containerName);
+    this.cleanupAgentSocket(spare.id);
+    await this.removeWorkspaceVolume(spare.workspaceVolume);
+  }
+
+  private async tryAdoptFromPool(opts: CreateOptions): Promise<boolean> {
+    if (
+      this.poolTarget <= 0 ||
+      opts.persist === false ||
+      Object.keys(opts.labels ?? {}).length > 0 ||
+      opts.image !== this.poolImage ||
+      !this.poolShapeMatches(opts.limits)
+    ) return false;
+    const spare = this.pool.shift();
+    if (!spare) {
+      this.fillPool();
+      return false;
+    }
+
+    try {
+      await this.docker.getContainer(spare.containerName).rename({ name: this.containerName(opts.id) });
+      this.egressIpCacheAt = 0; // the pre-adoption spare name was intentionally not mapped
+      this.agentSocketDirs.delete(spare.id);
+      if (this.agentTransport === "unix") this.agentSocketDirs.set(opts.id, spare.socketDir);
+      const tcpEndpoint = this.agentTcpEndpoints.get(spare.id);
+      if (tcpEndpoint) {
+        this.agentTcpEndpoints.delete(spare.id);
+        this.agentTcpEndpoints.set(opts.id, tcpEndpoint);
+      }
+      this.persistWorkspaceVolume(opts.id, spare.workspaceVolume);
+      const env = sandboxEnvironment(opts.env);
+      if (Object.keys(env).length > 0) await this.withConn(opts.id, (conn) => conn.setEnv(env));
+      log.info("container warm pool: adopted spare", { sandbox: opts.id, image: opts.image });
+      this.fillPool();
+      return true;
+    } catch (err) {
+      log.warn("container warm pool: adoption failed; falling back to a cold create", {
+        sandbox: opts.id,
+        error: (err as Error)?.message ?? String(err),
+      });
+      await this.cleanupFailedAdoption(opts.id, spare);
+      this.fillPool();
+      return false;
+    }
+  }
+
+  private async cleanupFailedAdoption(id: string, spare: ContainerPoolSpare): Promise<void> {
+    await this.removeContainerIdempotent(this.containerName(id)).catch(() => {});
+    await this.removeContainerIdempotent(spare.containerName).catch(() => {});
+    this.cleanupAgentSocket(id);
+    this.cleanupAgentSocket(spare.id);
+    this.agentTcpEndpoints.delete(spare.id);
+    this.forgetWorkspaceVolume(id);
+    await this.removeWorkspaceVolume(spare.workspaceVolume).catch(() => {});
+  }
+
+  async drainPool(): Promise<void> {
+    this.poolTarget = 0;
+    const spares = this.pool.splice(0);
+    await Promise.all(spares.map((spare) => this.removePoolSpare(spare).catch(() => {})));
+  }
+
   async create(opts: CreateOptions): Promise<void> {
     opts.onProgress?.("launching container");
-    await this.launchContainer(opts);
+    await this.launchContainer(opts, { allowPoolAdoption: true });
     if (opts.repo) {
       opts.onProgress?.("cloning repo");
       await this.cloneRepo(opts.id, opts.repo, opts.repoRef);
@@ -430,15 +757,51 @@ export class ContainerDriver extends AgentDriver {
   }
 
   async start(opts: CreateOptions): Promise<void> {
+    const container = this.docker.getContainer(this.containerName(opts.id));
+    let inspect: unknown;
     try {
-      await this.launchContainer(opts);
+      inspect = await container.inspect();
     } catch (err: unknown) {
-      // A 409 means the container already exists (already started) — treat as ok.
-      if (!isConflict(err)) throw err;
+      if (!isNotFound(err)) throw err;
+      await this.launchContainer(opts);
+      return;
     }
+
+    const details = inspect as ContainerInspect;
+    this.rememberAgentSocketDir(opts.id, inspect);
+    if (details.State?.Running) return;
+    if (details.Config?.Labels?.["hotcell.pool"] === "true") {
+      await container.start();
+      await this.waitForAgent(opts.id);
+      const env = sandboxEnvironment(opts.env);
+      if (Object.keys(env).length > 0) await this.withConn(opts.id, (conn) => conn.setEnv(env));
+      return;
+    }
+
+    const workspaceVolume = this.workspaceVolumeFor(opts.id) ?? this.workspaceVolumeFromInspect(inspect);
+    if (workspaceVolume && workspaceVolume !== this.volumeName(opts.id)) {
+      this.persistWorkspaceVolume(opts.id, workspaceVolume);
+    }
+    await this.removeContainerIdempotent(this.containerName(opts.id));
+    this.cleanupAgentSocket(opts.id);
+    await this.launchContainer(opts);
   }
 
   async stop(id: string): Promise<void> {
+    const container = this.docker.getContainer(this.containerName(id));
+    let inspect: unknown;
+    try {
+      inspect = await container.inspect();
+    } catch (err: unknown) {
+      if (!isNotFound(err)) throw err;
+      this.cleanupAgentSocket(id);
+      return;
+    }
+    this.rememberAgentSocketDir(id, inspect);
+    const workspaceVolume = this.workspaceVolumeFor(id) ?? this.workspaceVolumeFromInspect(inspect);
+    if (workspaceVolume && workspaceVolume !== this.volumeName(id)) {
+      this.persistWorkspaceVolume(id, workspaceVolume);
+    }
     // Remove the container but keep the workspace volume. With persistence the
     // data survives; without it, stop is effectively a destroy of the rootfs.
     await this.removeContainerIdempotent(this.containerName(id));
@@ -471,15 +834,21 @@ export class ContainerDriver extends AgentDriver {
   }
 
   /** Shared create/start path: mount the static agent and start it as PID 1. */
-  private async launchContainer(opts: CreateOptions): Promise<void> {
+  private async launchContainer(
+    opts: CreateOptions,
+    mode: { allowPoolAdoption?: boolean; skipPool?: boolean; poolSlot?: string } = {},
+  ): Promise<void> {
+    if (mode.allowPoolAdoption && !mode.skipPool && await this.tryAdoptFromPool(opts)) return;
+
     await this.ensureImage(opts.image);
     const agentBinary = await this.resolveAgentBinary();
     const persist = opts.persist ?? true;
     const useTcp = this.agentTransport === "tcp";
     const token = useTcp ? randomBytes(32).toString("hex") : undefined;
-    if (persist) await this.ensureVolume(opts.id);
-    // Under egress enforcement, put the sandbox on the dedicated bridge network
-    // (whose egress is locked down by the host firewall) and pin its DNS resolver.
+    const workspaceVolume = this.workspaceVolumeFor(opts.id) ?? this.volumeName(opts.id);
+    if (persist) await this.ensureVolume(opts.id, workspaceVolume, mode.poolSlot);
+    // Under egress enforcement, put every spare and adopted sandbox on the same
+    // policy network and pin its DNS resolver before any user code can run.
     const enforced = this.egress?.enforce === true;
     if (enforced) await this.ensureEgressNetwork();
 
@@ -487,29 +856,27 @@ export class ContainerDriver extends AgentDriver {
     if (!useTcp) {
       mkdirSync(socketDir, { recursive: true, mode: 0o700 });
       chmodSync(socketDir, 0o700);
+      this.agentSocketDirs.set(opts.id, socketDir);
       if (Buffer.byteLength(this.agentSocketPath(opts.id)) > 100) {
         this.cleanupAgentSocket(opts.id);
         throw new Error(`container driver: agent socket path is too long for sandbox ${opts.id}`);
       }
     }
-    // These variables are reserved for the transport and cannot be user-overridden.
-    const sandboxEnv = { ...opts.env };
-    delete sandboxEnv.HOTCELL_AGENT_LISTEN;
-    delete sandboxEnv.SBX_AGENT_LISTEN;
-    delete sandboxEnv.HOTCELL_AGENT_TOKEN;
-    delete sandboxEnv.SBX_AGENT_TOKEN;
     const env = Object.entries({
-      ...sandboxEnv,
+      ...sandboxEnvironment(opts.env),
       HOTCELL_AGENT_LISTEN: useTcp
         ? `tcp://0.0.0.0:${AGENT_TCP_PORT}`
         : "unix:///run/hotcell/a.sock",
       ...(token ? { HOTCELL_AGENT_TOKEN: token } : {}),
     }).map(([k, v]) => `${k}=${v}`);
     const binds = [
-      ...(persist ? [`${this.volumeName(opts.id)}:/workspace`] : []),
+      ...(persist ? [`${workspaceVolume}:/workspace`] : []),
       `${agentBinary}:/hotcell-agent:ro`,
       ...(!useTcp ? [`${socketDir}:/run/hotcell`] : []),
     ];
+    const labels: Record<string, string> = mode.poolSlot
+      ? { "sbx.managed": "true", "hotcell.pool": "true", "hotcell.pool.slot": mode.poolSlot }
+      : { "sbx.managed": "true", "sbx.id": opts.id, ...opts.labels };
     let created = false;
     try {
       const container = await this.docker.createContainer({
@@ -518,7 +885,7 @@ export class ContainerDriver extends AgentDriver {
         Entrypoint: ["/hotcell-agent"],
         Cmd: [],
         Env: env,
-        Labels: { "sbx.managed": "true", "sbx.id": opts.id, ...opts.labels },
+        Labels: labels,
         WorkingDir: "/workspace",
         ...(useTcp ? { ExposedPorts: { [`${AGENT_TCP_PORT}/tcp`]: {} } } : {}),
         HostConfig: {
@@ -553,14 +920,19 @@ export class ContainerDriver extends AgentDriver {
   }
 
   async destroy(id: string): Promise<void> {
-    await this.removeContainerIdempotent(this.containerName(id));
-    this.cleanupAgentSocket(id);
-    // Drop the persistent volume too — destroy is irreversible.
+    let workspaceVolume = this.workspaceVolumeFor(id);
     try {
-      await this.docker.getVolume(this.volumeName(id)).remove({ force: true });
+      const inspect = await this.docker.getContainer(this.containerName(id)).inspect();
+      this.rememberAgentSocketDir(id, inspect);
+      workspaceVolume ??= this.workspaceVolumeFromInspect(inspect);
     } catch (err: unknown) {
       if (!isNotFound(err)) throw err;
     }
+    await this.removeContainerIdempotent(this.containerName(id));
+    this.cleanupAgentSocket(id);
+    // Drop the persistent volume too — destroy is irreversible.
+    await this.removeWorkspaceVolume(workspaceVolume ?? this.volumeName(id));
+    this.forgetWorkspaceVolume(id);
   }
 }
 
@@ -570,6 +942,16 @@ function isNotFound(err: unknown): boolean {
 
 function isConflict(err: unknown): boolean {
   return statusCode(err) === 409;
+}
+
+/** Filter transport credentials/config out of the sandbox's user environment. */
+function sandboxEnvironment(env?: Record<string, string>): Record<string, string> {
+  const copy = { ...env };
+  delete copy.HOTCELL_AGENT_LISTEN;
+  delete copy.SBX_AGENT_LISTEN;
+  delete copy.HOTCELL_AGENT_TOKEN;
+  delete copy.SBX_AGENT_TOKEN;
+  return copy;
 }
 
 /** Docker's 403 "Pool overlaps with other one on this address space" — a

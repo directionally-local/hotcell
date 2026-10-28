@@ -49,6 +49,13 @@ export function createNamedDriver(name: string, config: Config): Driver {
           dns: config.egressDnsResolver,
         },
         { baseDir: join(dirname(resolve(config.dbPath)), "container-agent") },
+        {
+          depth: config.containerWarmPool,
+          image: config.defaultImage,
+          limits: defaultLimits(config),
+          reservationMb: config.defaultReservationMb,
+          stateDir: join(dirname(resolve(config.dbPath)), "container-pool"),
+        },
       );
     case "firecracker":
       return new FirecrackerDriver({

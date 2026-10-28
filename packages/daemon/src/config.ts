@@ -267,6 +267,8 @@ export interface Config {
    * `HOTCELL_IMAGE`. Kept separate from the per-sandbox state dir so it survives.
    */
   vzImageCacheDir: string;
+  /** Warm-pool size for the container driver (`HOTCELL_CONTAINER_WARM_POOL`, default 0 = off). */
+  containerWarmPool: number;
   /**
    * Warm-pool size for the Apple VZ driver (`HOTCELL_VZ_WARM_POOL`, default 0 = off):
    * keep this many base-image microVMs pre-booted so a `create` of the base image
@@ -402,6 +404,7 @@ export function loadConfig(): Config {
     vzStateDir: env("VZ_STATE_DIR") ?? join(stateRoot(), "vz"),
     vzDiskGb: Number(env("VZ_DISK_GB") ?? 4),
     vzImageCacheDir: env("VZ_IMAGE_CACHE") ?? join(stateRoot(), "vz", "images"),
+    containerWarmPool: Number(env("CONTAINER_WARM_POOL") ?? 0),
     vzWarmPool: Number(env("VZ_WARM_POOL") ?? 0),
     fcBin: env("FC_BIN") ?? "firecracker",
     fcKernel: env("FC_KERNEL") ?? repoAsset("helpers/hotcell-vz/guest/vmlinux-fc"),

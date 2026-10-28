@@ -42,6 +42,22 @@ async function main(): Promise<void> {
       };
     },
     getContainer: () => ({
+      inspect: async () => {
+        const config = createConfig as {
+          Env?: string[];
+          Labels?: Record<string, string>;
+          HostConfig?: { Binds?: string[] };
+        } | undefined;
+        const mounts: Array<{ Type: string; Name?: string; Source?: string; Destination: string }> = [];
+        for (const bind of config?.HostConfig?.Binds ?? []) {
+          const split = bind.lastIndexOf(":");
+          const source = bind.slice(0, split);
+          const destination = bind.slice(split + 1);
+          if (destination === "/workspace") mounts.push({ Type: "volume", Name: source, Destination: destination });
+          if (destination === "/run/hotcell") mounts.push({ Type: "bind", Source: source, Destination: destination });
+        }
+        return { Config: { Env: config?.Env, Labels: config?.Labels }, Mounts: mounts };
+      },
       remove: async () => {
         if (child && child.exitCode === null) {
           child.kill("SIGTERM");

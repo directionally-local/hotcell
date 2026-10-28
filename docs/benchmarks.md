@@ -23,6 +23,7 @@ The suite measures **TTI (Time to Interactive)**: wall-clock from `create()` to 
 | [Burst TTI](#burst-tti) | 100 sandboxes created simultaneously | Behaviour under a thundering herd |
 | [Warm-pool adopt](#warm-pool-adopt) | Create against a pre-booted pool | The floor when a microVM is already running |
 | [Container-agent operations](#container-agent-operations) | Repeated exec and file operations through old Docker exec and the guest agent | Per-operation driver overhead; supplemental, not TTI |
+| [Container warm-pool burst](#container-warm-pool-burst) | 25 concurrent create+probe calls, pool depth 25 | Burst improvement and the cost of holding ready containers |
 | [sandbox-dax](#sandbox-dax) | Clone + install + typecheck a real repo | Real dev-workload throughput, and the memory/CPU a real build actually demands |
 
 Hardware: **Mac** = M-series, 8 cores / 16 GB, Docker Desktop with an 8 GB VM. **GCP** = 8 vCPU / 32 GB, nested virtualisation.
@@ -40,6 +41,19 @@ Supplemental same-host microbenchmark, separate from the ComputeSDK TTI suite. T
 Measured 2026-10-28 on macOS arm64 with Docker Desktop 29.5.2 (Docker engine aarch64, 8 vCPU, 7,936 MiB). Because Docker Desktop does not forward the host-mounted Unix socket used on Linux, the current agent column uses the new authenticated loopback TCP transport. These figures are specific to this host/runtime and are not a Linux Unix-socket measurement or a TTI score.
 
 Reproduce with `HOTCELL_BENCH_ITERATIONS=50 npm run bench:container-agent` (requires Docker; the script builds the guest binary/daemon and removes its temporary containers and volumes).
+
+### Container warm-pool burst
+
+Supplemental driver-level burst measurement, not an official ComputeSDK TTI row. On 2026-10-28, 25 concurrent `ContainerDriver.create()` calls were followed by `exec("python3 -V")`; the cold path had no pool and the warm path adopted 25 pre-started containers. Both used `python:3.11-slim-bookworm` with an exact 64 MiB memory shape. The pool target therefore reserved 1,600 MiB, and the 25 active sandboxes were also capped at 64 MiB. Each path had two unmeasured warm-up bursts; the reported sample is one 25-wide burst.
+
+| Path | Concurrency | Median create+probe | P95 | Success | Median speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cold create | 25 | 1,844.58 ms | 2,391.57 ms | 25/25 | — |
+| Warm-pool adopt | 25 | **517.42 ms** | **719.06 ms** | 25/25 | **3.56×** |
+
+Host: macOS arm64, Docker Desktop 29.5.2 (Docker engine aarch64, 8 vCPU, 7,936 MiB). This is a direct driver create+probe measurement, not REST/SDK TTI; it demonstrates a 25-wide burst on this host, not the issue's 100-wide target. A pool only accelerates eligible requests while a spare is ready.
+
+Reproduce with `HOTCELL_BENCH_POOL_DEPTH=25 HOTCELL_BENCH_MEMORY_MB=64 HOTCELL_BENCH_REPETITIONS=1 npm run bench:container-warm-pool` (requires Docker; the script cleans up temporary sandboxes and spares).
 
 ### Sequential TTI
 
@@ -88,7 +102,7 @@ One earlier container burst-100 run, with the daemon's default 256 MiB per-sandb
 
 ### Warm-pool adopt
 
-hotcell can keep pre-booted microVMs on standby (`HOTCELL_VZ_WARM_POOL`, `HOTCELL_FC_WARM_POOL`) and adopt one on create instead of booting a kernel.
+hotcell can keep pre-started container spares (`HOTCELL_CONTAINER_WARM_POOL`) and microVM guests (`HOTCELL_VZ_WARM_POOL`, `HOTCELL_FC_WARM_POOL`). Containers are adopted only for the exact pool image/resource shape; the microVM floor measured below is specifically Apple VZ.
 
 **Measured floor: 24 ms median** (10 iterations: 33, 28, 21, 23, 27, 19, 24, 16, 24, 23 ms; min 16, max 33). Apple VZ, all ten confirmed adopted from the pool.
 
@@ -97,7 +111,7 @@ Caveats, because this number is attractive and easy to misuse:
 - It is **not an official TTI measurement**. It used hotcell's Alpine base image and an `echo` probe with a custom timer, not the harness's `node:22-slim` + `node -v`. `node -v` alone adds process-spawn cost.
 - n = 10, localhost.
 - The documented defects that blocked normal adoption have since been fixed in the current code: daemon defaults are matched against pool limits, Apple VZ follows the configured pool image, refill is bounded-parallel, and pool reservations are included in admission accounting. The result above predates those fixes and must not be used as a current warm-pool TTI row.
-- **Pool depth, not adopt latency, is the real constraint.** Refill is bounded-parallel, but still competes for host CPU and memory with foreground boots. A pool therefore only wins while an eligible spare is available; beyond pool depth, the request follows the cold path. Sizing a pool to absorb a 100-wide burst also means holding 100 guests' worth of RAM, which no laptop has.
+- **Pool depth, not adopt latency, is the real constraint.** Refill is bounded-parallel, but still competes for host CPU and memory with foreground boots. A microVM pool only wins while an eligible spare is available; beyond pool depth, the request follows the cold path. Sizing a 100-wide microVM pool means holding 100 guests' worth of RAM, which no laptop has. Container pools have a different per-spare footprint; see the container burst measurement above.
 
 Treat 24 ms as evidence that the adopt path itself is fast, not as a current official TTI result. Rerun the ComputeSDK harness with a matching image and resource shape, and set `WARM_POOL_DEPTH` in `evidence/opencode-benchmark/harness/bench-suite.sh` so the harness waits for the pool to fill before measuring.
 

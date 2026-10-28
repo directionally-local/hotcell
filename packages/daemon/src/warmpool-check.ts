@@ -2,7 +2,7 @@
  * Apple VZ warm-pool (M7b) check. Proves a pre-booted spare microVM is adopted
  * on create — an instant acquire — versus a full cold boot, and that the adopted
  * sandbox is fully functional with an isolated workspace that survives stop/start.
- * Run on a Mac with the VZ artifacts built: `npm run check:warmpool`.
+ * Run on a Mac with the VZ artifacts built: `npm run check:warmpool:vz`.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
