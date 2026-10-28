@@ -40,6 +40,8 @@ jobs:
         run: npm run check:container-agent
       - name: container agent driver check (fake Docker, authenticated TCP)
         run: npm run check:container-agent-tcp
+      - name: container warm-pool contract (fake Docker)
+        run: npm run check:warmpool
       - name: egress control-plane check (mock upstream)
         run: npm run check:egress
       - name: API auth check (key file, cross-site guard, SDK fallback)
@@ -77,6 +79,8 @@ jobs:
         run: npm run check:agent
       - name: container agent driver check (fake Docker, authenticated TCP)
         run: npm run check:container-agent-tcp
+      - name: container warm-pool contract (fake Docker)
+        run: npm run check:warmpool
       - name: egress control-plane check (mock upstream)
         run: npm run check:egress
       - name: API auth check (key file, cross-site guard, SDK fallback)

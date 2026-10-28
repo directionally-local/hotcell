@@ -49,6 +49,7 @@ Environment variables (`packages/daemon/src/config.ts`):
 | `HOTCELL_HOST` | `127.0.0.1` | Bind address |
 | `HOTCELL_PORT` | `4750` | Bind port |
 | `HOTCELL_IMAGE` | `python:3.11-slim-bookworm` | Default sandbox image |
+| `HOTCELL_CONTAINER_WARM_POOL` | `0` (off) | Pre-start this many exact-shape container spares; pool memory counts against admission |
 | `HOTCELL_DB` | `~/.hotcell/state.db` | Embedded SQLite path for durable control-plane state (`:memory:` for ephemeral) |
 | `HOTCELL_SLEEP_AFTER_MS` | `0` | Default idle timeout before a sandbox auto-pauses (`0` = disabled; per-sandbox override via `sleepAfter`) |
 | `HOTCELL_REAP_INTERVAL_MS` | `15000` | How often the idle reaper scans for sandboxes to auto-pause |
@@ -194,7 +195,7 @@ npm run build
 ### Key abstractions
 
 - **`Driver` interface** (`packages/daemon/src/driver/types.ts`): the runtime boundary. Future Firecracker / Apple VZ drivers implement this same surface so the API and SDK stay unchanged.
-- **`ContainerDriver`**: backs sandboxes with Docker containers running the static `hotcell-agent` as PID 1. A read-only binary bind mount connects the daemon to shared `AgentDriver` operations over a per-sandbox Unix socket on Linux or authenticated loopback TCP on non-Linux Docker hosts; Docker still handles lifecycle, volumes, limits, and networking.
+- **`ContainerDriver`**: backs sandboxes with Docker containers running the static `hotcell-agent` as PID 1. A read-only binary bind mount connects the daemon to shared `AgentDriver` operations over a per-sandbox Unix socket on Linux or authenticated loopback TCP on non-Linux Docker hosts. Optional `HOTCELL_CONTAINER_WARM_POOL` spares match the default image/limits exactly, get a fresh workspace per adoption, and are charged in admission accounting; Docker still handles lifecycle, volumes, limits, and networking.
 - **`SandboxStore`**: registry backed by embedded SQLite (`node:sqlite`), with in-memory `Map`s as a write-through cache rehydrated on startup, so records survive a daemon restart.
 - **Lifecycle FSM**: status is `running` | `paused` | `stopped`. The idle reaper (`src/lifecycle.ts`) auto-pauses `running` sandboxes idle past `sleepAfterMs` (skipping those with exposed ports / running processes); any container-work op auto-resumes a `paused` sandbox via the `ensureLive` choke point in `api/server.ts`. `store.touch` records activity (also on proxy traffic). Manual `stop` → `stopped` is never auto-resumed.
 - **Metrics + cost (Phase 2)**: `driver.stats(id)` reads guest `/proc`/cgroup stats through the agent (container and microVM drivers); the sampler (`src/metrics.ts`) integrates `cpuSeconds`/`memByteSeconds` into the persisted `usage` column and the preview proxy meters `egressBytes`; `src/cost.ts` applies configurable rates (cpu + mem + egress). Surfaced at `GET /sandboxes/:id/metrics` (`?live=0` skips the live runtime call), SDK `Sandbox.metrics()`, CLI `hotcell stats`.
