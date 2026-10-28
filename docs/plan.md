@@ -54,7 +54,7 @@ One self-contained control-plane daemon per host, a tiny in-sandbox agent, and t
    - **firecracker driver (phase 3, Linux):** microVM hardware isolation, FC snapshots, vsock transport. Uses firecracker-go-sdk.
    - **applevz driver (phase 3, macOS):** Apple Virtualization.framework for VM-grade isolation on Mac.
    - Single-tenant MVP defaults to container; users flip a flag for microVM isolation.
-3. **In-sandbox agent (Go static binary, ~a few hundred LOC; Rust optional later for size)** — runs as PID 1 / sidecar inside each sandbox. Speaks a small protocol over unix socket (container) or vsock (microVM): spawn process, stream stdout/stderr, stdin, file read/write/mkdir/watch (inotify), port-ready detection (`waitForPort`), log-pattern wait. This is the only per-sandbox overhead we add — keep it tiny and statically linked. This is what makes "hardware is the only limit" true.
+3. **In-sandbox agent (Go static binary)** — runs as PID 1 inside each sandbox. Speaks a small protocol over a Unix socket on Linux containers, authenticated loopback TCP on non-Linux Docker hosts, or vsock in microVMs: spawn process, stream stdout/stderr, stdin, file read/write/mkdir/watch, port-ready detection, stats, and terminal operations. It is statically linked and shared across runtime drivers.
 4. **Client SDKs (TypeScript + Python)** — thin clients over the REST/WS API. Mirror the Cloudflare surface so existing harnesses adopt with near-zero friction: `getSandbox()`, `exec()`, `execStream()`, `runCode()` + `createCodeContext()`, `writeFile`/`readFile`/`mkdir`/`listFiles`, `startProcess()` + `waitForPort()`, `exposePort()`, `createSession()`, `setEnvVars()`, `watch()`, `createBackup`/`restoreBackup`, `destroy()`. API-compatibility is a deliberate moat ("drop-in, but on your own box").
 5. **CLI (`hotcell`)** — single binary, also embeds the daemon. `hotcell up` (start daemon), `hotcell run "<cmd>"`, `hotcell ls`, `hotcell logs/exec/attach`, `hotcell expose <port>`, `hotcell snapshot`, `hotcell rm`. Install via `curl | sh` / Homebrew.
 6. **Web dashboard (React, embedded in the daemon binary)** — list sandboxes; live terminal (xterm.js over WS); per-sandbox CPU/mem/disk/net; live cost meter; preview-URL links; kill/snapshot. Observability + cost visibility built in is a top-3 differentiator from the research.
@@ -96,10 +96,10 @@ One self-contained control-plane daemon per host, a tiny in-sandbox agent, and t
 
 ### Phase 0 — Vertical slice (≈1–2 weeks) — prove the spine end-to-end
 
-**Status: complete** (functional vertical slice). The spine is proven end-to-end against live Docker via `npm run smoke`. Two items are intentionally deferred: the dedicated in-sandbox agent (the daemon `exec`s into containers directly; revisited when the Phase 3 microVM drivers need it) and multi-OS/real-harness validation.
+**Status: complete** (functional vertical slice). The spine is proven end-to-end against live Docker via `npm run smoke`. The shared in-sandbox agent was added later and now serves container and microVM operations; broader real-harness validation remains ongoing.
 
 - [x] Daemon with container driver. Implemented using Docker via `dockerode`; works on Linux and macOS. The original plan called for containerd/Apple container — Docker was chosen for the vertical slice because it is the most widely available runtime on developer machines.
-- [ ] In-sandbox agent over unix socket: spawn + stream stdout/stderr. **Not implemented.** The daemon currently `exec`s directly into containers. A dedicated agent is deferred until the microVM drivers in Phase 3 require it, or until file/port operations in Phase 1 make a sidecar cleaner.
+- [x] In-sandbox guest agent: a static Go PID 1 serves exec, file, process, terminal, watch, stats, and backup operations through the shared driver surface. Container transport is Unix socket on Linux and authenticated loopback TCP on non-Linux Docker hosts; microVMs use vsock. See `agent/README.md`.
 - [x] REST: `POST /sandboxes`, `POST /sandboxes/{id}/exec` (SSE stream), `DELETE /sandboxes/{id}`.
 - [x] TS SDK: `getSandbox()`, `exec()`, `execStream()`.
 - [x] `hotcell run` CLI. Also added `hotcell ls` and `hotcell rm` for basic ops.

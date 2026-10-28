@@ -6,8 +6,10 @@
  * helper relays a guest vsock to a unix socket. Run: `npm run check:agent`.
  */
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -107,7 +109,61 @@ async function main(): Promise<void> {
     ok("egress relay: loopback listener → dialer → mock gateway round-trip (idempotent)");
 
     conn.close();
+    await checkAuthenticatedTcpAgent(bin, dir);
+    ok("authenticated TCP agent: token validation, exec, and secret env isolation");
     console.log(`\nagent-check: ${passed} checks passed`);
+  } finally {
+    proc.kill();
+  }
+}
+
+async function checkAuthenticatedTcpAgent(bin: string, cwd: string): Promise<void> {
+  const probe = createNetServer();
+  const port = await new Promise<number>((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("could not allocate a TCP agent test port"));
+        return;
+      }
+      probe.close((err) => err ? reject(err) : resolve(address.port));
+    });
+  });
+  const token = randomBytes(32).toString("hex");
+  const proc = spawn(bin, [], {
+    env: {
+      ...process.env,
+      HOTCELL_AGENT_LISTEN: `tcp://127.0.0.1:${port}`,
+      HOTCELL_AGENT_TOKEN: token,
+    },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+
+  try {
+    let conn: AgentConn | undefined;
+    let lastError: unknown;
+    for (let i = 0; i < 50; i++) {
+      try {
+        conn = await AgentConn.connectTcp({ host: "127.0.0.1", port, token, timeoutMs: 500 });
+        break;
+      } catch (err) {
+        lastError = err;
+        await sleep(100);
+      }
+    }
+    assert.ok(conn, `authenticated TCP agent should become ready: ${String(lastError)}`);
+    assert.equal(conn.hello?.agent, "hotcell-agent");
+    let output = "";
+    await conn.exec("printf tcp-agent-ok; printf '%s' \"$HOTCELL_AGENT_TOKEN\"", { cwd }, (event) => {
+      if (event.type === "stdout") output += event.data;
+    });
+    assert.equal(output, "tcp-agent-ok", "the transport token is not inherited by user commands");
+    await assert.rejects(
+      AgentConn.connectTcp({ host: "127.0.0.1", port, token: "wrong-token", timeoutMs: 2000 }),
+      /authentication failed/,
+    );
+    conn.close();
   } finally {
     proc.kill();
   }

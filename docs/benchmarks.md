@@ -4,7 +4,7 @@ hotcell measured with [computesdk/benchmarks](https://github.com/computesdk/benc
 
 Run on 2026-07-19/20 against hotcell v0.1.10 (`main@d897b0c`). Provider numbers quoted for context are from that project's published run of 2026-07-17.
 
-The four latency benchmarks below were run through the ComputeSDK harness unmodified. The [real-workload benchmark](#sandbox-dax) is the same underlying script run through hotcell's own harness on bare metal — that section says so and links the raw output.
+The four TTI benchmarks were run through the ComputeSDK harness unmodified. The container-agent operation table is a separate same-host microbenchmark. The [real-workload benchmark](#sandbox-dax) is the same underlying script run through hotcell's own harness on bare metal — that section says so and links the raw output.
 
 ## Read this before quoting any number
 
@@ -22,9 +22,24 @@ The suite measures **TTI (Time to Interactive)**: wall-clock from `create()` to 
 | [Staggered TTI](#staggered-tti) | 100 sandboxes launched 200 ms apart | Degradation as load ramps |
 | [Burst TTI](#burst-tti) | 100 sandboxes created simultaneously | Behaviour under a thundering herd |
 | [Warm-pool adopt](#warm-pool-adopt) | Create against a pre-booted pool | The floor when a microVM is already running |
+| [Container-agent operations](#container-agent-operations) | Repeated exec and file operations through old Docker exec and the guest agent | Per-operation driver overhead; supplemental, not TTI |
 | [sandbox-dax](#sandbox-dax) | Clone + install + typecheck a real repo | Real dev-workload throughput, and the memory/CPU a real build actually demands |
 
 Hardware: **Mac** = M-series, 8 cores / 16 GB, Docker Desktop with an 8 GB VM. **GCP** = 8 vCPU / 32 GB, nested virtualisation.
+
+### Container-agent operations
+
+Supplemental same-host microbenchmark, separate from the ComputeSDK TTI suite. The baseline reproduces the pre-agent `ContainerDriver` Docker-exec implementations at `288e7d4`; the agent column uses the current `ContainerDriver`. Both use `python:3.11-slim-bookworm`, persistent Docker volumes, the same Docker Desktop host, and 126-byte file contents. Each operation had 5 warmups and 50 measured samples; baseline and agent samples alternated to reduce order bias. Container startup is excluded. `exec` runs `true`; `writeFile` and `readFile` operate on the same file.
+
+| Operation | Docker exec median | Docker exec P95 | Guest agent median | Guest agent P95 | Median speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `exec` | 53.63 ms | 77.88 ms | **6.44 ms** | 16.05 ms | **8.33×** |
+| `writeFile` | 54.51 ms | 70.67 ms | **3.47 ms** | 11.57 ms | **15.71×** |
+| `readFile` | 46.77 ms | 66.25 ms | **2.92 ms** | 7.20 ms | **16.02×** |
+
+Measured 2026-10-28 on macOS arm64 with Docker Desktop 29.5.2 (Docker engine aarch64, 8 vCPU, 7,936 MiB). Because Docker Desktop does not forward the host-mounted Unix socket used on Linux, the current agent column uses the new authenticated loopback TCP transport. These figures are specific to this host/runtime and are not a Linux Unix-socket measurement or a TTI score.
+
+Reproduce with `HOTCELL_BENCH_ITERATIONS=50 npm run bench:container-agent` (requires Docker; the script builds the guest binary/daemon and removes its temporary containers and volumes).
 
 ### Sequential TTI
 

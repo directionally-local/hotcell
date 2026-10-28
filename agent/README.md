@@ -1,10 +1,10 @@
 # sbx-agent
 
-The **in-sandbox agent**: a tiny static Linux binary that runs as PID 1 inside each container or microVM and serves a framed, multiplexed protocol to the daemon over a bind-mounted **unix socket** (containers) or **vsock** (Firecracker / Apple VZ).
+The **in-sandbox agent**: a tiny static Linux binary that runs as PID 1 inside each container or microVM and serves a framed, multiplexed protocol to the daemon over a Unix socket on Linux containers, authenticated loopback TCP on non-Linux Docker hosts, or vsock (Firecracker / Apple VZ).
 
-This agent is the single implementation of sandbox operations across all drivers. The container driver mounts the static binary read-only and a per-sandbox socket directory; microVMs use vsock. The TypeScript `AgentDriver` routes exec, files, processes, terminal, watch, stats, and backup operations through the same wire protocol.
+This agent is the single implementation of sandbox operations across all drivers. The container driver mounts the static binary read-only; Linux uses a per-sandbox socket directory, while Docker Desktop-style hosts use a loopback-only published TCP port with a per-sandbox token. MicroVMs use vsock. The TypeScript `AgentDriver` routes exec, files, processes, terminal, watch, stats, and backup operations through the same wire protocol.
 
-> Status: protocol, server, and transports are built. Static binaries target `linux/amd64` and `linux/arm64`; `npm run check:container-agent` exercises the unix-socket agent through the container driver without Docker, and `npm run test:agent` covers the Go protocol/server. Container package releases include both architecture binaries.
+> Status: protocol, server, and transports are built. Static binaries target `linux/amd64` and `linux/arm64`; `npm run check:container-agent` exercises the Unix-socket driver path without Docker, `npm run check:container-agent-tcp` exercises authenticated TCP plus endpoint recovery through fake port mapping, `npm run check:agent` covers both handshakes, and `npm run smoke` validates the live container path. Container package releases include both architecture binaries.
 
 ## Why Go, why a separate module
 
@@ -22,7 +22,7 @@ agent/
   cmd/hotcell-agent/     entrypoint + transports
     listen_portable.go     tcp:// / unix:// dev transport (any OS)
     listen_linux.go        AF_VSOCK transport (the production path)
-    listen_other.go        non-Linux: vsock unavailable, use SBX_AGENT_LISTEN
+    listen_other.go        non-Linux: vsock unavailable, use HOTCELL_AGENT_LISTEN
 ```
 
 The protocol and server are **pure, portable Go**: `Serve` takes any `io.ReadWriteCloser`, so the whole thing is unit-testable on a developer's macOS box over `net.Pipe` / a unix socket, with no vsock and no guest. Only `stats` is platform-specific.
@@ -54,8 +54,8 @@ From the repo root: `npm run test:agent` / `npm run build:agent`.
 ### Run it locally (no microVM)
 
 ```bash
-# terminal 1 — serve over a local socket instead of vsock:
-SBX_AGENT_LISTEN=tcp://127.0.0.1:9000 go run ./cmd/sbx-agent
+# terminal 1 — serve over a local TCP port instead of vsock:
+HOTCELL_AGENT_LISTEN=tcp://127.0.0.1:9000 go run ./cmd/hotcell-agent
 ```
 
 A host-side client connects, reads the Hello frame, then sends `Control` request frames and reads back `Stdout`/`Stderr`/`Result` frames. (`server/server_test.go` and `cmd/sbx-agent/listen_portable_test.go` are exactly such clients.)

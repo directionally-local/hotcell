@@ -6,8 +6,8 @@
 //
 // Transport selection:
 //   - HOTCELL_AGENT_LISTEN set (e.g. "tcp://127.0.0.1:9000" or "unix:///tmp/a.sock")
-//     → listen there. This is the dev/test path and works on any OS, so the
-//     agent can be exercised on a developer's macOS box without a guest.
+//     → listen there. This is the dev/test path and works on any OS; when
+//     HOTCELL_AGENT_TOKEN is also set, TCP clients must authenticate first.
 //   - otherwise → vsock (Linux only; the production path inside a guest).
 package main
 
@@ -38,10 +38,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	// This is a transport-only setting. Do not pass it through the agent's
+	authToken := agentEnv("AGENT_TOKEN")
+	// These are transport-only settings. Do not pass them through the agent's
 	// inherited environment to user commands launched inside the sandbox.
 	_ = os.Unsetenv("HOTCELL_AGENT_LISTEN")
 	_ = os.Unsetenv("SBX_AGENT_LISTEN")
+	_ = os.Unsetenv("HOTCELL_AGENT_TOKEN")
+	_ = os.Unsetenv("SBX_AGENT_TOKEN")
 	ag := server.New()
 	ag.EgressDial = egressDial
 	log.Printf("listening on %s (version %s)", ln.Addr(), server.Version)
@@ -53,6 +56,11 @@ func main() {
 			return
 		}
 		go func(c net.Conn) {
+			if err := authenticate(c, authToken); err != nil {
+				log.Printf("connection authentication failed")
+				_ = c.Close()
+				return
+			}
 			if err := ag.Serve(c); err != nil {
 				log.Printf("serve: %v", err)
 			}

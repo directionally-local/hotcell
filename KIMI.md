@@ -194,7 +194,7 @@ npm run build
 ### Key abstractions
 
 - **`Driver` interface** (`packages/daemon/src/driver/types.ts`): the runtime boundary. Future Firecracker / Apple VZ drivers implement this same surface so the API and SDK stay unchanged.
-- **`ContainerDriver`**: backs sandboxes with Docker containers running the static `hotcell-agent` as PID 1. A read-only binary bind mount and a per-sandbox unix-socket mount connect the daemon to the shared `AgentDriver` operations; Docker still handles lifecycle, volumes, limits, and networking.
+- **`ContainerDriver`**: backs sandboxes with Docker containers running the static `hotcell-agent` as PID 1. A read-only binary bind mount connects the daemon to shared `AgentDriver` operations over a per-sandbox Unix socket on Linux or authenticated loopback TCP on non-Linux Docker hosts; Docker still handles lifecycle, volumes, limits, and networking.
 - **`SandboxStore`**: registry backed by embedded SQLite (`node:sqlite`), with in-memory `Map`s as a write-through cache rehydrated on startup, so records survive a daemon restart.
 - **Lifecycle FSM**: status is `running` | `paused` | `stopped`. The idle reaper (`src/lifecycle.ts`) auto-pauses `running` sandboxes idle past `sleepAfterMs` (skipping those with exposed ports / running processes); any container-work op auto-resumes a `paused` sandbox via the `ensureLive` choke point in `api/server.ts`. `store.touch` records activity (also on proxy traffic). Manual `stop` → `stopped` is never auto-resumed.
 - **Metrics + cost (Phase 2)**: `driver.stats(id)` reads guest `/proc`/cgroup stats through the agent (container and microVM drivers); the sampler (`src/metrics.ts`) integrates `cpuSeconds`/`memByteSeconds` into the persisted `usage` column and the preview proxy meters `egressBytes`; `src/cost.ts` applies configurable rates (cpu + mem + egress). Surfaced at `GET /sandboxes/:id/metrics` (`?live=0` skips the live runtime call), SDK `Sandbox.metrics()`, CLI `hotcell stats`.
@@ -206,7 +206,7 @@ npm run build
 1. Client calls SDK method.
 2. SDK hits daemon REST endpoint.
 3. Daemon looks up sandbox in `SandboxStore`.
-4. Daemon invokes `Driver.exec` (container unix-socket agent or microVM vsock agent).
+4. Daemon invokes `Driver.exec` (container Unix-socket/TCP agent or microVM vsock agent).
 5. Output streams back as SSE and is parsed by the SDK into `ExecEvent`s.
 
 ### External integrations

@@ -4,9 +4,10 @@ import type { ExecEvent, FileChangeEvent, FileInfo } from "../types.js";
 
 /**
  * Host-side client for the in-sandbox `sbx-agent` wire protocol (see `agent/proto`).
- * One `AgentConn` wraps a single byte stream to the agent — a unix socket the VZ
- * helper relays to the guest's vsock in production, or a direct unix/tcp socket
- * in tests — and multiplexes concurrent requests over it by `streamId`, exactly
+ * One `AgentConn` wraps a single byte stream to the agent — a unix socket, a
+ * loopback TCP connection for container hosts that cannot forward bind-mounted
+ * sockets, or a vsock-relayed unix socket in production — and multiplexes
+ * concurrent requests over it by `streamId`, exactly
  * as the Go server expects.
  *
  * Frame: `[u32 length BE][u8 type][u32 streamId BE][payload]`. The agent sends an
@@ -25,6 +26,8 @@ const FRAME = {
 } as const;
 
 const HEADER = 9;
+const AGENT_AUTH_PREFIX = "HOTCELL/1 ";
+const AGENT_AUTH_ACCEPTED = "HOTCELL/1 OK\n";
 
 export interface AgentHello {
   event: string;
@@ -81,6 +84,65 @@ export class AgentConn {
         reject(e);
       });
       socket.on("close", () => conn.failAll(new Error("agent connection closed")));
+    });
+  }
+
+  /** Connect to a TCP agent using the container's per-sandbox transport token. */
+  static connectTcp(opts: {
+    host: string;
+    port: number;
+    token: string;
+    timeoutMs?: number;
+  }): Promise<AgentConn> {
+    return new Promise((resolve, reject) => {
+      const socket = connect({ host: opts.host, port: opts.port });
+      const timeoutMs = opts.timeoutMs ?? 10000;
+      let buffer: Buffer = Buffer.alloc(0);
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        socket.off("data", onData);
+        socket.off("connect", onConnect);
+        socket.off("error", onError);
+        socket.off("close", onClose);
+        socket.destroy();
+        reject(err);
+      };
+      const onError = (err: Error) => fail(err);
+      const onClose = () => fail(new Error("agent TCP connection closed during authentication"));
+      const onConnect = () => socket.write(`${AGENT_AUTH_PREFIX}${opts.token}\n`);
+      const onData = (chunk: Buffer) => {
+        buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk;
+        const newline = buffer.indexOf(0x0a);
+        if (newline === -1) {
+          if (buffer.length > 256) fail(new Error("agent TCP authentication response is too large"));
+          return;
+        }
+        const response = buffer.subarray(0, newline + 1).toString("utf8");
+        if (response !== AGENT_AUTH_ACCEPTED) {
+          fail(new Error(`agent TCP authentication failed: ${response.trim()}`));
+          return;
+        }
+        const leftover = buffer.subarray(newline + 1);
+        settled = true;
+        if (timer) clearTimeout(timer);
+        socket.off("data", onData);
+        socket.off("connect", onConnect);
+        socket.off("error", onError);
+        socket.off("close", onClose);
+        AgentConn.attach(socket, leftover, timeoutMs).then(resolve, reject);
+      };
+      timer = setTimeout(
+        () => fail(new Error(`agent TCP authentication timed out (${opts.host}:${opts.port})`)),
+        timeoutMs,
+      );
+      socket.on("data", onData);
+      socket.once("connect", onConnect);
+      socket.once("error", onError);
+      socket.once("close", onClose);
     });
   }
 
