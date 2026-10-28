@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sinameraji/hotcell/agent/proto"
-	"github.com/sinameraji/hotcell/agent/server"
+	"github.com/directionally-local/hotcell/agent/proto"
+	"github.com/directionally-local/hotcell/agent/server"
 )
 
 // TestUnixTransportEndToEnd drives the real listenSpec transport (not net.Pipe):

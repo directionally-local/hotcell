@@ -7,7 +7,7 @@ FROM python:3.11-slim-bookworm
 ARG NODE_MAJOR=22
 
 # OCI metadata — links the published GHCR package to this repo and sets provenance.
-LABEL org.opencontainers.image.source="https://github.com/sinameraji/hotcell" \
+LABEL org.opencontainers.image.source="https://github.com/directionally-local/hotcell" \
       org.opencontainers.image.description="hotcell base sandbox — Python 3.11 + Node + git + build tools" \
       org.opencontainers.image.licenses="Apache-2.0"
 

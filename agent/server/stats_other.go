@@ -5,7 +5,7 @@ package server
 import (
 	"runtime"
 
-	"github.com/sinameraji/hotcell/agent/proto"
+	"github.com/directionally-local/hotcell/agent/proto"
 )
 
 // readStats is a stub for non-Linux builds (the agent only ever runs as a Linux

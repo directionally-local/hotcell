@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sinameraji/hotcell/agent/proto"
+	"github.com/directionally-local/hotcell/agent/proto"
 )
 
 // testClient is a minimal host-side driver: it speaks proto over a pipe to a

@@ -26,11 +26,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sinameraji/hotcell.git"
+    "url": "git+https://github.com/directionally-local/hotcell.git"
   },
   "homepage": "https://directionallylocal.com/hotcell/",
   "bugs": {
-    "url": "https://github.com/sinameraji/hotcell/issues"
+    "url": "https://github.com/directionally-local/hotcell/issues"
   },
   "keywords": [
     "sandbox",

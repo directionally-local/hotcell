@@ -16,7 +16,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/sinameraji/hotcell/agent/server"
+	"github.com/directionally-local/hotcell/agent/server"
 )
 
 

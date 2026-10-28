@@ -53,7 +53,7 @@ Pushing a tag still publishes it, skipping release-please. Bump first (see
 ### Trusted publishing (OIDC, no tokens)
 
 npm and PyPI get no stored token. Both publish over GitHub OIDC, bound to
-repo `sinameraji/hotcell` + workflow `release.yml`. **Don't rename
+repo `directionally-local/hotcell` + workflow `release.yml`. **Don't rename
 `release.yml`**, or both publishers stop matching. A new package needs one
 manual first publish, then npmjs.com → package → Settings → Publishing access →
 add Trusted Publisher with that repo and workflow.
@@ -85,7 +85,7 @@ API token is stored anywhere.
 
 ## Later: one-command install
 
-- Homebrew tap (`brew install sinameraji/tap/hotcell`) wrapping the npm install
+- Homebrew tap (`brew install directionally-local/tap/hotcell`) wrapping the npm install
   or a bundled binary.
 - `curl -fsSL https://hotcell-bw3.pages.dev/install.sh | sh` on the landing page.
 
