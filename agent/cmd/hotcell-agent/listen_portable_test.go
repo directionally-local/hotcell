@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -21,6 +22,13 @@ func TestUnixTransportEndToEnd(t *testing.T) {
 		t.Fatalf("listenSpec: %v", err)
 	}
 	defer ln.Close()
+	info, err := os.Stat(sock)
+	if err != nil {
+		t.Fatalf("stat socket: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o666 {
+		t.Fatalf("unix socket mode = %#o, want %#o", got, 0o666)
+	}
 
 	ag := server.New()
 	go func() {
