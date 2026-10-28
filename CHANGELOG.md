@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.33](https://github.com/directionally-local/hotcell/compare/v0.1.32...v0.1.33) (2026-10-28)
+
+
+### Performance
+
+* **container:** add bounded warm pool ([#46](https://github.com/directionally-local/hotcell/issues/46)) ([f3d43c8](https://github.com/directionally-local/hotcell/commit/f3d43c8832d9c10901fee76b8ad6611c7be3c495))
+
 ## [0.1.32](https://github.com/directionally-local/hotcell/compare/v0.1.31...v0.1.32) (2026-10-28)
 
 
