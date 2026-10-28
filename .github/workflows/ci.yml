@@ -24,6 +24,7 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: agent/go.sum
       - run: npm ci
+      - run: npm run build:agent
       - run: npm run build
       - name: agent unit tests
         run: npm run test:agent
@@ -35,6 +36,8 @@ jobs:
         run: npm run check:audit
       - name: agent protocol check (VM-free, unix socket)
         run: npm run check:agent
+      - name: container agent driver check (fake Docker)
+        run: npm run check:container-agent
       - name: egress control-plane check (mock upstream)
         run: npm run check:egress
       - name: API auth check (key file, cross-site guard, SDK fallback)

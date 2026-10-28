@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "node --import tsx src/index.ts",
     "start": "node dist/index.js",
-    "prepack": "chmod +x dist/index.js"
+    "prepack": "node ../../scripts/package-agent-assets.mjs && chmod +x dist/index.js"
   },
   "dependencies": {
     "dockerode": "^4.0.2"

@@ -21,6 +21,7 @@
     "check:startup": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/startup-check.js",
     "check:env": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/env-check.js",
     "check:agent": "npm run build --workspace @hotcell/daemon && (cd agent && go build -o /tmp/hotcell-agent-check ./cmd/hotcell-agent) && node packages/daemon/dist/agent-check.js",
+    "check:container-agent": "npm run build --workspace @hotcell/daemon && (cd agent && go build -o /tmp/hotcell-agent-check ./cmd/hotcell-agent) && HOTCELL_AGENT_BIN=/tmp/hotcell-agent-check node packages/daemon/dist/container-agent-check.js",
     "check:applevz": "npm run build:vz && npm run build --workspace @hotcell/daemon && node packages/daemon/dist/applevz-check.js",
     "check:auth": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && node packages/daemon/dist/auth-check.js",
     "check:router": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/router-check.js",

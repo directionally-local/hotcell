@@ -50,15 +50,18 @@ async function main(): Promise<void> {
     // doesn't exist on the mac host running this check).
     let out = "";
     let err = "";
+    let execExitCode: number | undefined;
     const code = await conn.exec(
       "echo out-line && echo err-line >&2 && exit 3",
       { cwd: dir },
       (e) => {
         if (e.type === "stdout") out += e.data;
         if (e.type === "stderr") err += e.data;
+        if (e.type === "exit") execExitCode = e.exitCode;
       },
     );
     assert.equal(code, 3, "exec exit code");
+    assert.equal(execExitCode, 3, "exec emits its terminal exit event");
     assert.match(out, /out-line/, "exec stdout");
     assert.match(err, /err-line/, "exec stderr");
     ok("exec: stdout/stderr streaming + exit code");

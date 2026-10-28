@@ -263,6 +263,7 @@ export interface CreateOptions {
 }
 
 export interface WriteFileOptions {
+  /** Unix permissions in octal (for example, "600" or "0644"). */
   mode?: string;
 }
 
@@ -289,6 +290,7 @@ export interface ProcessHandle {
 export interface WaitForPortOptions {
   timeoutMs?: number;
   intervalMs?: number;
+  /** Hostname or IP literal to probe inside the sandbox. */
   host?: string;
 }
 

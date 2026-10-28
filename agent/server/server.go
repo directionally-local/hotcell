@@ -339,7 +339,11 @@ func copyToFrames(w *proto.FrameWriter, t proto.FrameType, id uint32, r io.Reade
 }
 
 func (a *Agent) handleWriteFile(w *proto.FrameWriter, id uint32, req proto.Request) {
-	mode := parseMode(req.Mode, 0o644)
+	mode, ok := parseMode(req.Mode, 0o644)
+	if !ok {
+		writeError(w, id, "mode must be a 3- or 4-digit octal permission string")
+		return
+	}
 	if err := os.WriteFile(req.Path, []byte(req.Content), mode); err != nil {
 		writeError(w, id, err.Error())
 		return
@@ -650,14 +654,23 @@ func writeError(w *proto.FrameWriter, id uint32, msg string) {
 	writeResult(w, id, proto.Result{OK: false, Error: msg})
 }
 
-func parseMode(s string, def os.FileMode) os.FileMode {
+func parseMode(s string, def os.FileMode) (os.FileMode, bool) {
 	if s == "" {
-		return def
+		return def, true
 	}
-	if v, err := strconv.ParseUint(s, 8, 32); err == nil {
-		return os.FileMode(v)
+	if len(s) < 3 || len(s) > 4 {
+		return 0, false
 	}
-	return def
+	for _, digit := range s {
+		if digit < '0' || digit > '7' {
+			return 0, false
+		}
+	}
+	v, err := strconv.ParseUint(s, 8, 12)
+	if err != nil {
+		return 0, false
+	}
+	return os.FileMode(v), true
 }
 
 func durOrDefault(ms int, def time.Duration) time.Duration {

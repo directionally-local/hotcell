@@ -34,12 +34,16 @@ func main() {
 	log.SetPrefix("hotcell-agent ")
 
 	platformInit() // e.g. bring up loopback in slim guests (no ip/ifconfig)
-	ag := server.New()
-	ag.EgressDial = egressDial
 	ln, err := listen()
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
+	// This is a transport-only setting. Do not pass it through the agent's
+	// inherited environment to user commands launched inside the sandbox.
+	_ = os.Unsetenv("HOTCELL_AGENT_LISTEN")
+	_ = os.Unsetenv("SBX_AGENT_LISTEN")
+	ag := server.New()
+	ag.EgressDial = egressDial
 	log.Printf("listening on %s (version %s)", ln.Addr(), server.Version)
 
 	for {

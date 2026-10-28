@@ -13,7 +13,7 @@
 - **License:** Apache-2.0
 - **Key frameworks / libraries:** `dockerode` (Docker Engine API), `tsx` (dev runner), native `node:http` + `fetch` + `node:sqlite` (embedded state store)
 
-Current status: **Phases 0–2 complete; Phase 3 started.** The `container` (Docker) driver works on Linux and macOS with the full sandbox API, durable SQLite state, idle lifecycle, metrics + cost meter, structured logs + OTel traces, API-key auth, a web dashboard with a live xterm.js terminal, and an egress credential proxy (LLM gateway). The runtime driver is selectable via `HOTCELL_DRIVER`; the `firecracker`/`applevz` microVM drivers are scaffolded (compile-checked stubs) and need a KVM/VZ host. The daemon now requires Node ≥22 (`node:sqlite` + global `WebSocket`).
+Current status: **Phases 0–2 complete; Phase 3 started.** The `container` (Docker) driver works on Linux and macOS with the full sandbox API, durable SQLite state, idle lifecycle, metrics + cost meter, structured logs + OTel traces, API-key auth, a web dashboard with a live xterm.js terminal, and an egress credential proxy (LLM gateway). Container sandbox operations now run through the static Go guest agent over a per-sandbox bind-mounted unix socket, shared with the microVM drivers. The runtime driver is selectable via `HOTCELL_DRIVER`; the `firecracker`/`applevz` microVM drivers require KVM/VZ host validation. The daemon now requires Node ≥22 (`node:sqlite` + global `WebSocket`).
 
 ---
 
@@ -25,6 +25,7 @@ All commands run from the repository root unless noted.
 |---|---|---|
 | `npm install` | Install workspace dependencies | Required first step |
 | `npm run build` | Compile all workspaces (`tsc`) | Writes to `packages/*/dist/` |
+| `npm run build:agent` | Build static Linux guest agents for amd64 + arm64 | Required for container creates from a source checkout; published daemon packages bundle both binaries |
 | `npm run dev:daemon` | Run daemon in watch mode with `tsx` | Fast feedback; does not rebuild `dist/` |
 | `node packages/daemon/dist/index.js` | Start compiled daemon | Or `hotcelld` via `node_modules/.bin` |
 | `npm run smoke` | Build + run `packages/daemon/dist/smoke.js` | Full end-to-end suite (TS surface) |
@@ -32,12 +33,12 @@ All commands run from the repository root unless noted.
 | `npm run dev:cli` | Run CLI in watch mode with `tsx` | Fast feedback; does not rebuild `dist/` |
 | `hotcell run "<cmd>"` | Create a sandbox, run a command, destroy it | Via `node_modules/.bin/sb` after build |
 
-There are **no test, lint, or format scripts** yet. Type-checking is performed by `tsc` during `npm run build`.
+There is no generic JS test runner or lint/format script. Targeted checks are exposed as `npm run check:*`; Go protocol/server tests run via `npm run test:agent`. Type-checking is performed by `tsc` during `npm run build`.
 
 ### Running the daemon locally
 
 1. Ensure Docker (or colima / Apple `container`) is running.
-2. `npm install && npm run build`
+2. `npm install && npm run build:agent && npm run build`
 3. `node packages/daemon/dist/index.js`
 4. Daemon listens on `http://127.0.0.1:4750` by default.
 
@@ -66,7 +67,7 @@ Environment variables (`packages/daemon/src/config.ts`):
 | `packages/daemon/` | Control-plane daemon (`hotcelld`). Owns the REST API, sandbox store, and runtime-driver abstraction. |
 | `packages/sdk/` | TypeScript client SDK (`@hotcell/sdk`). Thin HTTP client that mirrors the Cloudflare Sandbox surface. |
 | `sdk/python/` | Python client SDK (`hotcell-sdk`, package `hotcell`). Stdlib-only; mirrors the TS surface, snake_cased. Outside `packages/*` so it's not an npm workspace. |
-| `agent/` | **Go module** (`github.com/directionally-local/hotcell/agent`) for the in-sandbox `hotcell-agent` — the vsock RPC agent the Phase 3 microVM drivers (Firecracker/Apple VZ) use in place of `docker exec`. Separate `go.mod`, outside the npm workspaces. `proto/` = wire protocol, `server/` = transport-agnostic handlers, `cmd/hotcell-agent/` = entrypoint + transports. Dev: `npm run test:agent` (tests run on macOS over net.Pipe/unix, no vsock); ship: `npm run build:agent` (static `linux/{amd64,arm64}`). Only dep: `golang.org/x/sys` (for `AF_VSOCK`). See `agent/README.md`. |
+| `agent/` | **Go module** (`github.com/directionally-local/hotcell/agent`) for the in-sandbox `hotcell-agent` shared by container + microVM drivers. Separate `go.mod`, outside the npm workspaces. `proto/` = wire protocol, `server/` = transport-agnostic handlers, `cmd/hotcell-agent/` = entrypoint + transports. Dev: `npm run test:agent` (tests run on macOS over net.Pipe/unix, no vsock); ship: `npm run build:agent` (static `linux/{amd64,arm64}`). Only dep: `golang.org/x/sys` (for `AF_VSOCK`). See `agent/README.md`. |
 | `packages/cli/` | `hotcell` CLI. Commands: `run`, `ls`, `rm`. Uses `@hotcell/sdk` to talk to the daemon. |
 | `images/base/` | OCI image definition for the richer sandbox workspace (Python 3.11 + Node 22 + git/bash). |
 | `docs/plan.md` | Long-form product/architecture spec and phased build plan. |
@@ -193,10 +194,10 @@ npm run build
 ### Key abstractions
 
 - **`Driver` interface** (`packages/daemon/src/driver/types.ts`): the runtime boundary. Future Firecracker / Apple VZ drivers implement this same surface so the API and SDK stay unchanged.
-- **`ContainerDriver`**: backs sandboxes with long-lived Docker containers. The container stays alive (`sleep infinity`) and the daemon `exec`s into it on demand.
+- **`ContainerDriver`**: backs sandboxes with Docker containers running the static `hotcell-agent` as PID 1. A read-only binary bind mount and a per-sandbox unix-socket mount connect the daemon to the shared `AgentDriver` operations; Docker still handles lifecycle, volumes, limits, and networking.
 - **`SandboxStore`**: registry backed by embedded SQLite (`node:sqlite`), with in-memory `Map`s as a write-through cache rehydrated on startup, so records survive a daemon restart.
 - **Lifecycle FSM**: status is `running` | `paused` | `stopped`. The idle reaper (`src/lifecycle.ts`) auto-pauses `running` sandboxes idle past `sleepAfterMs` (skipping those with exposed ports / running processes); any container-work op auto-resumes a `paused` sandbox via the `ensureLive` choke point in `api/server.ts`. `store.touch` records activity (also on proxy traffic). Manual `stop` → `stopped` is never auto-resumed.
-- **Metrics + cost (Phase 2)**: `driver.stats(id)` reads the Docker stats API; the sampler (`src/metrics.ts`) integrates `cpuSeconds`/`memByteSeconds` into the persisted `usage` column and the preview proxy meters `egressBytes`; `src/cost.ts` applies configurable rates (cpu + mem + egress). Surfaced at `GET /sandboxes/:id/metrics` (`?live=0` skips the live Docker call), SDK `Sandbox.metrics()`, CLI `hotcell stats`.
+- **Metrics + cost (Phase 2)**: `driver.stats(id)` reads guest `/proc`/cgroup stats through the agent (container and microVM drivers); the sampler (`src/metrics.ts`) integrates `cpuSeconds`/`memByteSeconds` into the persisted `usage` column and the preview proxy meters `egressBytes`; `src/cost.ts` applies configurable rates (cpu + mem + egress). Surfaced at `GET /sandboxes/:id/metrics` (`?live=0` skips the live runtime call), SDK `Sandbox.metrics()`, CLI `hotcell stats`.
 - **Dashboard (Phase 2)**: served at `GET /` from `src/web/dashboard.ts` (no build step); `GET /info` exposes driver/image/proxy/cost-rates for it.
 - **`HotcellClient` / `Sandbox`**: SDK classes that expose `getSandbox`, `exec`, `execStream`, `destroy`, matching the Cloudflare Sandbox shape.
 
@@ -205,7 +206,7 @@ npm run build
 1. Client calls SDK method.
 2. SDK hits daemon REST endpoint.
 3. Daemon looks up sandbox in `SandboxStore`.
-4. Daemon invokes `Driver.exec` (currently Docker exec).
+4. Daemon invokes `Driver.exec` (container unix-socket agent or microVM vsock agent).
 5. Output streams back as SSE and is parsed by the SDK into `ExecEvent`s.
 
 ### External integrations
