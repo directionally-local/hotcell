@@ -66,9 +66,10 @@ Set these before `hotcell start` (they're inherited by the daemon) or on `hotcel
 | `HOTCELL_HOST` / `HOTCELL_PORT` | `127.0.0.1` / `4750` | REST API bind |
 | `HOTCELL_DRIVER` | `container` | Default runtime driver — all three ship live: `container` (Docker, Linux + macOS), `firecracker` (Linux + KVM), `applevz` (macOS). Also selectable **per sandbox** at create time (`driver: …`), so one daemon mixes containers and microVMs |
 | `HOTCELL_IMAGE` | `ghcr.io/sinameraji/hotcell-base` | Default sandbox image (python + node + git + build tools) |
+| `HOTCELL_AGENT_BIN` | packaged agent for Docker host architecture | Override the static Linux guest-agent binary used by container sandboxes; from a source checkout, build both defaults with `npm run build:agent` |
 | `HOTCELL_DEFAULT_MEMORY_MB` / `HOTCELL_DEFAULT_CPUS` / `HOTCELL_DEFAULT_PIDS` | `0` (unlimited) | Default per-sandbox hard caps (RAM MiB / fractional cores / process count) |
 | `HOTCELL_ADMISSION` | `enforce` | Reject `create` when the host memory budget is exhausted (`off` to only report) |
-| `HOTCELL_HOST_MEMORY_MB` / `HOTCELL_HOST_CPUS` | auto-detect | Host capacity budget for admission (defaults to the Docker host's MemTotal/NCPU) |
+| `HOTCELL_HOST_MEMORY_MB` / `HOTCELL_HOST_CPUS` | auto-detect | Host capacity budget for admission (defaults to the runtime host's MemTotal/NCPU) |
 | `HOTCELL_OVERCOMMIT` / `HOTCELL_DEFAULT_RESERVATION_MB` | `1` / `256` | Memory overcommit factor / admission floor for an uncapped, not-yet-sampled sandbox |
 | `HOTCELL_PROXY_PORT` | `4751` | Preview-URL proxy |
 | **Egress control plane** | | |

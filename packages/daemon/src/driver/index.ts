@@ -1,4 +1,5 @@
 import type { Config } from "../config.js";
+import { dirname, join, resolve } from "node:path";
 import { AppleVzDriver } from "./applevz.js";
 import { ContainerDriver } from "./container.js";
 import { FirecrackerDriver } from "./firecracker.js";
@@ -39,12 +40,16 @@ export function createDriver(config: Config): Driver {
 export function createNamedDriver(name: string, config: Config): Driver {
   switch (name) {
     case "container":
-      return new ContainerDriver(undefined, {
-        enforce: config.egressEnforce,
-        network: config.egressNetwork,
-        subnet: config.egressSubnet,
-        dns: config.egressDnsResolver,
-      });
+      return new ContainerDriver(
+        undefined,
+        {
+          enforce: config.egressEnforce,
+          network: config.egressNetwork,
+          subnet: config.egressSubnet,
+          dns: config.egressDnsResolver,
+        },
+        { baseDir: join(dirname(resolve(config.dbPath)), "container-agent") },
+      );
     case "firecracker":
       return new FirecrackerDriver({
         fcBin: config.fcBin,

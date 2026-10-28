@@ -1,10 +1,10 @@
 # sbx-agent
 
-The **in-sandbox agent**: a tiny static Linux binary that runs inside each microVM (as PID 1 / init under the Firecracker and Apple VZ drivers) and serves a small framed, multiplexed protocol to the daemon over **vsock**.
+The **in-sandbox agent**: a tiny static Linux binary that runs as PID 1 inside each container or microVM and serves a framed, multiplexed protocol to the daemon over a bind-mounted **unix socket** (containers) or **vsock** (Firecracker / Apple VZ).
 
-This is the per-sandbox piece that replaces `docker exec` once there is no Docker. The container driver gets exec/files/stats "for free" from the Docker Engine API; a microVM has no such thing, so *every* control-plane operation becomes an RPC to this agent. It is **shared verbatim by both microVM drivers** (Firecracker on Linux, Apple VZ on macOS) — the vsock transport is the same on both — so building it once unblocks both.
+This agent is the single implementation of sandbox operations across all drivers. The container driver mounts the static binary read-only and a per-sandbox socket directory; microVMs use vsock. The TypeScript `AgentDriver` routes exec, files, processes, terminal, watch, stats, and backup operations through the same wire protocol.
 
-> Status: protocol + server + transports are built and tested. The vsock transport is cross-compiled and verified to build for `linux/amd64` and `linux/arm64`; its live round-trip is exercised on the KVM/VZ host. Implemented RPCs: `exec` (streaming stdout/stderr/exit), `writeFile`/`readFile`/`mkdir`/`listFiles`, `waitForPort`, `setEnv`, `stats`. Still to add (streaming-heavy): `watch` (inotify), `startProcess`/`listProcesses`/`killProcess`/`streamLogs`, `openPty`+`resize`, `tcpConnect` (preview bridge), `tarWorkspace`/`untarWorkspace`.
+> Status: protocol, server, and transports are built. Static binaries target `linux/amd64` and `linux/arm64`; `npm run check:container-agent` exercises the unix-socket agent through the container driver without Docker, and `npm run test:agent` covers the Go protocol/server. Container package releases include both architecture binaries.
 
 ## Why Go, why a separate module
 
@@ -19,7 +19,7 @@ agent/
   server/                transport-agnostic Serve(io.ReadWriteCloser) + per-method handlers
     stats_linux.go         real /proc + cgroup reads (the guest)
     stats_other.go         stub so the package compiles/tests on macOS
-  cmd/sbx-agent/         entrypoint + transports
+  cmd/hotcell-agent/     entrypoint + transports
     listen_portable.go     tcp:// / unix:// dev transport (any OS)
     listen_linux.go        AF_VSOCK transport (the production path)
     listen_other.go        non-Linux: vsock unavailable, use SBX_AGENT_LISTEN

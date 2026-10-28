@@ -117,6 +117,9 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
       # OIDC trusted publishing needs npm >= 11.5; node 22 bundles npm 10.
       - run: npm install -g npm@latest
       # Guard against v0.1.21's failure mode: versions bumped but the exact
@@ -126,6 +129,7 @@ jobs:
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
         run: node scripts/check-release-versions.mjs
       - run: npm ci
+      - run: npm run build:agent
       - run: npm run build
       - name: publish (dependency order, provenance)
         run: |
