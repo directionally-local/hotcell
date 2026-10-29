@@ -18,6 +18,7 @@ export const ROUTES = {
   "healthz": { id: "healthz", method: "GET", path: "/healthz", summary: "Daemon health and active runtime driver", tag: "system", auth: false },
   "info": { id: "info", method: "GET", path: "/info", summary: "Daemon metadata: drivers, default image, ports, providers, cost rates", tag: "system", auth: false },
   "capacity": { id: "capacity", method: "GET", path: "/capacity", summary: "Host capacity and admission status", tag: "system", auth: true },
+  "capacity.sizing": { id: "capacity.sizing", method: "POST", path: "/capacity/sizing", summary: "Size a host for N agents from the shared per-agent density model", tag: "system", auth: true },
   "keys.reload": { id: "keys.reload", method: "POST", path: "/reload-keys", summary: "Hot-reload provider keys after `hotcell keys add/rm`", tag: "system", auth: true },
   "audit.events": { id: "audit.events", method: "POST", path: "/audit-events", summary: "Record a client-side audit event (key import choices)", tag: "system", auth: true },
   "traces": { id: "traces", method: "GET", path: "/traces", summary: "Recent finished spans, newest first", tag: "system", auth: true },

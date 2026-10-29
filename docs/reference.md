@@ -123,6 +123,7 @@ The full machine-readable description is [`docs/openapi.json`](./openapi.json).
 | GET | `/healthz` | Daemon health and active runtime driver |
 | GET | `/info` | Daemon metadata: drivers, default image, ports, providers, cost rates |
 | GET | `/capacity` | Host capacity and admission status |
+| POST | `/capacity/sizing` | Size a host for N agents from the shared per-agent density model |
 | POST | `/reload-keys` | Hot-reload provider keys after `hotcell keys add/rm` |
 | POST | `/audit-events` | Record a client-side audit event (key import choices) |
 | GET | `/traces` | Recent finished spans, newest first |

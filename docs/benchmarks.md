@@ -150,6 +150,64 @@ The more useful result is not a single row but the **demand curve** — what thi
 
 Measuring this also surfaced and fixed three product bugs (a `writableRootfs` gap, a git 407-CONNECT failure, and a resume-path admission gap), and one open one: in the microVM guest `bun install` source-builds `tree-sitter-powershell` instead of using the shipped prebuilt, worked around by putting npm's bundled `node-gyp` on PATH at a cost of ~1.3 s. Root cause still open, documented in [`nodegyp-diagnostic.txt`](../evidence/opencode-benchmark/raw/hetzner-5950x/nodegyp-diagnostic.txt).
 
+### Per-agent density
+
+This is the number the installer's "this server fits ~N agents" line and any public "X more agents per machine" claim depend on: how much RAM, vCPU and disk one *working* agent takes. The boot-time and TTI numbers above do not answer it — an idle sandbox is not an agent.
+
+**Status: partially measured.** Only the heavy profile has numbers, and only for memory and CPU. Empty cells are empty on purpose; nothing here is estimated.
+
+| Profile | Driver | Peak RAM / agent | Avg RAM / agent | Burst vCPU | Avg vCPU | Disk / agent |
+|---|---|---|---|---|---|---|
+| light — scripts / small Python repo | container | — | — | — | — | — |
+| light | firecracker | — | — | — | — | — |
+| light | Apple VZ | — | — | — | — | — |
+| medium — typical TS web app (~92k lines) | container | — | — | — | — | — |
+| medium | firecracker | — | — | — | — | — |
+| medium | Apple VZ | — | — | — | — | — |
+| heavy — large monorepo, slow builds | container | 24 GiB floor | — | 16 | — | — |
+| heavy | firecracker | 24 GiB floor + 54 MiB baseline | — | 16 | — | — |
+| heavy | Apple VZ | — | — | — | — | — |
+
+The heavy row comes from the sandbox-dax demand curve above: peak working set 11.0–14.2 GiB across byte-identical reps, 16 GiB flipping between pass and OOM, ≥ 24 GiB never failing; and the CPU knee at 8–16 vCPU (30.7 s at 8, 20.2 s at 16, 17.4 s at 32).
+
+Per-sandbox runtime baseline, measured separately from the workload:
+
+| Driver | Host RAM per live sandbox | Source |
+|---|---|---|
+| container | ~0 (shared kernel; not isolated from the workload) | not measured |
+| firecracker | ~54 MiB | `npm run bench:density`, 2026-07-17, n2-standard-4 nested-virt |
+| Apple VZ | — | not measured |
+
+#### The model
+
+`packages/daemon/src/sizing.ts` is the single implementation, so the installer, the dashboard and the website calculator cannot drift apart:
+
+```
+agents     = people × agentsPerPerson
+concurrent = agents × peakFraction
+memory     = ceil(concurrent × (peakMemoryMb + baselineMb) × headroom)
+vcpus      = ceil(concurrent × burstCpus)
+disk       = ceil(agents × diskGb × headroom)
+```
+
+Defaults are `peakFraction = 1` (assume every agent peaks at the same moment — that is what admission control has to survive) and `headroom = 1.25` (OS, page cache, the daemon itself).
+
+An unmeasured input is `null`, never a plausible-looking number. `sizeHost()` then returns `ok: false` with a `missing` list, and every caller is expected to render "not measured" instead of a total. That is the point of the exercise: the alternative was a guess.
+
+Surfaces: `POST /capacity/sizing`, `client.sizing()` in the TypeScript SDK, and `hotcell capacity --sizing`.
+
+#### How to fill the table
+
+Needs a Linux host with Docker and KVM (Firecracker), or macOS with the Apple VZ artifacts.
+
+1. Run a realistic agent task per profile — install, typecheck, tests, build — not an idle loop.
+2. Sample per-sandbox RSS and CPU at least once a second for the whole task (`GET /sandboxes/{id}/metrics`); record peak and mean.
+3. Record disk after the task: workspace + dependencies + caches.
+4. Repeat at least three times and report the band, not one rep — the sandbox-dax memory floor moved 11.0–14.2 GiB across byte-identical runs.
+5. Paste the numbers into `SIZING_PROFILES` / `DRIVER_BASELINES` and set `measured: true` only when every field in that row is filled.
+
+End-to-end density (the issue's step 2) is the same task repeated on one fixed host until admission control refuses the next create; record the host spec and the count.
+
 ## Summary
 
 - **Cold-start latency for one sandbox is good** — 210 ms on the container driver, competitive with the hosted mid-pack even after a hosting allowance, provided you host it comparably.

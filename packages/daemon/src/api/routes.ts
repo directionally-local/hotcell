@@ -305,6 +305,26 @@ export const ROUTES: readonly RouteDef[] = [
     },
   },
   {
+    id: "capacity.sizing",
+    method: "POST",
+    path: "/capacity/sizing",
+    summary: "Size a host for N agents from the shared per-agent density model",
+    tag: "system",
+    auth: true,
+    request: {
+      type: "object",
+      properties: {
+        people: number,
+        agentsPerPerson: number,
+        profile: { type: "string", enum: ["light", "medium", "heavy"] },
+        driver: { type: "string", enum: ["container", "firecracker", "applevz"] },
+        peakFraction: number,
+        headroom: number,
+      },
+    },
+    response: anyObject,
+  },
+  {
     id: "keys.reload",
     method: "POST",
     path: "/reload-keys",

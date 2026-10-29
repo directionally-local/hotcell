@@ -287,6 +287,94 @@
         }
       }
     },
+    "/capacity/sizing": {
+      "post": {
+        "operationId": "capacity.sizing",
+        "summary": "Size a host for N agents from the shared per-agent density model",
+        "tags": [
+          "system"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Daemon error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "people": {
+                    "type": "number"
+                  },
+                  "agentsPerPerson": {
+                    "type": "number"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "enum": [
+                      "light",
+                      "medium",
+                      "heavy"
+                    ]
+                  },
+                  "driver": {
+                    "type": "string",
+                    "enum": [
+                      "container",
+                      "firecracker",
+                      "applevz"
+                    ]
+                  },
+                  "peakFraction": {
+                    "type": "number"
+                  },
+                  "headroom": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/reload-keys": {
       "post": {
         "operationId": "keys.reload",
