@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.35](https://github.com/directionally-local/hotcell/compare/v0.1.34...v0.1.35) (2026-10-29)
+
+
+### Features
+
+* **image:** ship tsrs in the base sandbox image ([#57](https://github.com/directionally-local/hotcell/issues/57)) ([c3962b5](https://github.com/directionally-local/hotcell/commit/c3962b54962654b335d33434066ac8eed87df28c)), closes [#18](https://github.com/directionally-local/hotcell/issues/18)
+
 ## [0.1.34](https://github.com/directionally-local/hotcell/compare/v0.1.33...v0.1.34) (2026-10-29)
 
 
