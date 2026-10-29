@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.37](https://github.com/directionally-local/hotcell/compare/v0.1.36...v0.1.37) (2026-10-29)
+
+
+### Features
+
+* **density:** recover [#59](https://github.com/directionally-local/hotcell/issues/59)'s measurements, add end-to-end density and wire sizing into setup + dashboard ([#61](https://github.com/directionally-local/hotcell/issues/61)) ([baad7c0](https://github.com/directionally-local/hotcell/commit/baad7c0229cd01a1854b516e3e4ccf633cbaa95b))
+
 ## [0.1.36](https://github.com/directionally-local/hotcell/compare/v0.1.35...v0.1.36) (2026-10-29)
 
 
