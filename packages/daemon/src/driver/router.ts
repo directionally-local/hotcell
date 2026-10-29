@@ -51,6 +51,7 @@ export class DriverRouter implements Driver {
     private readonly config: Config,
     private readonly store: SandboxStore,
     private readonly defaultName: string,
+    private readonly createDriver: (name: string, config: Config) => Driver = createNamedDriver,
   ) {
     this.name = defaultName;
   }
@@ -60,7 +61,7 @@ export class DriverRouter implements Driver {
     const key = name || this.defaultName;
     let d = this.instances.get(key);
     if (!d) {
-      d = createNamedDriver(key, this.config);
+      d = this.createDriver(key, this.config);
       this.instances.set(key, d);
     }
     return d;

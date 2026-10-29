@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
       - run: npm run build:agent
       - run: npm run build
+      - name: unit tests (node:test)
+        run: npm test
       - name: agent unit tests
         run: npm run test:agent
       - name: secrets-at-rest file modes (config.json, state.db)
@@ -69,6 +71,8 @@ jobs:
           cache-dependency-path: agent/go.sum
       - run: npm ci
       - run: npm run build
+      - name: unit tests (node:test)
+        run: npm test
       - name: agent unit tests
         run: npm run test:agent
       - name: secrets-at-rest file modes (config.json, state.db)
