@@ -68,6 +68,27 @@ export interface SandboxInfo {
   limits: SandboxLimits;
 }
 
+/**
+ * A captured microVM template: a paused guest snapshot plus its disks, stored on
+ * the daemon host. `getSandbox({ template })` restores one into a fresh sandbox
+ * without booting a kernel or re-running setup.
+ */
+export interface TemplateInfo {
+  /** Stable name (also the on-disk directory name). */
+  name: string;
+  /** Driver that captured it; a fork is routed back to the same driver. */
+  driver: string;
+  /** Image the template was captured from. */
+  image: string;
+  /** Resource shape the snapshot was taken at; a fork must match it. */
+  limits: SandboxLimits;
+  /** Sandbox it was captured from (provenance only). */
+  sourceSandboxId?: string;
+  createdAt: string;
+  /** Bytes the snapshot + disks occupy on the host. */
+  sizeBytes: number;
+}
+
 export interface FileInfo {
   path: string;
   name: string;
@@ -242,6 +263,13 @@ export interface CreateOptions {
   cpus?: number;
   /** Hard process/thread cap (overrides the daemon default; 0 = unlimited). */
   pidsLimit?: number;
+  /**
+   * Restore a captured template into a fresh sandbox instead of booting one.
+   * The workspace, installed tooling and any running processes come from the
+   * snapshot, so `repo`/`setup`/`branch`/`networked` are rejected — they are
+   * already baked in. The resource shape must match the template's.
+   */
+  template?: string;
   /**
    * Ask the daemon to return immediately (status `creating`) and provision in
    * the background; the SDK then polls the sandbox until it is usable. This
@@ -492,6 +520,26 @@ export class HotcellClient {
       "/sandboxes",
     );
     return sandboxes;
+  }
+
+  /**
+   * Capture a running sandbox as a reusable template. The daemon pauses the
+   * guest, writes a full snapshot, and resumes the source, so the sandbox keeps
+   * running. Only microVM drivers (Firecracker) support this.
+   */
+  async createTemplate(name: string, from: string): Promise<TemplateInfo> {
+    return this.request<TemplateInfo>("POST", "/templates", { name, from });
+  }
+
+  /** List captured templates, newest first. */
+  async listTemplates(): Promise<TemplateInfo[]> {
+    const { templates } = await this.request<{ templates: TemplateInfo[] }>("GET", "/templates");
+    return templates;
+  }
+
+  /** Delete a template and its on-disk snapshot. */
+  async deleteTemplate(name: string): Promise<void> {
+    await this.request("DELETE", `/templates/${encodeURIComponent(name)}`);
   }
 
   /** Daemon health + active runtime driver. */

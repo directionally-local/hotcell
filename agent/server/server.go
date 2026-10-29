@@ -234,6 +234,8 @@ func (a *Agent) dispatch(ctx context.Context, w *proto.FrameWriter, id uint32, r
 		a.handleEgressListen(w, id, req)
 	case "stats":
 		a.handleStats(w, id)
+	case "reseed":
+		a.handleReseed(w, id, req)
 	default:
 		writeError(w, id, "unknown method: "+req.Method)
 	}

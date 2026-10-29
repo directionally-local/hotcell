@@ -152,6 +152,49 @@ export interface CreateOptions {
 }
 
 /**
+ * A captured microVM template: a paused guest snapshot (RAM + device state) plus
+ * the disks it was taken with, stored on the host so it can be restored into
+ * many fresh VMMs. Only microVM drivers that support snapshot restore can
+ * produce one.
+ */
+export interface TemplateInfo {
+  /** Stable, URL-safe name; also the on-disk directory name. */
+  name: string;
+  /** Image the template was captured from (a fork inherits it). */
+  image: string;
+  /** Resource shape the snapshot was taken at — a fork must match it exactly. */
+  limits: ResourceLimits;
+  /** ISO timestamp the template was captured. */
+  createdAt: string;
+  /** Bytes the template occupies on the host (snapshot + disks). */
+  sizeBytes: number;
+  /** Sandbox the template was captured from (provenance only). */
+  sourceSandboxId?: string;
+}
+
+/** Inputs for capturing a template from a live sandbox. */
+export interface CreateTemplateOptions {
+  /** Name to store the template under (the daemon validates the shape). */
+  name: string;
+  /** Running sandbox to capture. It is resumed before this resolves. */
+  sourceId: string;
+  /** Image the source sandbox was created from (a fork inherits it). */
+  image: string;
+  /** Resolved resource shape of the source sandbox (a fork must match it). */
+  limits: ResourceLimits;
+}
+
+/**
+ * A create that restores a template instead of booting a kernel. The workspace,
+ * installed tooling and any running processes come from the snapshot, so
+ * `repo`/`setup`/`branch` are not applied — the daemon rejects them up front.
+ */
+export interface ForkOptions extends CreateOptions {
+  /** Template to restore from. */
+  template: string;
+}
+
+/**
  * Runtime-driver interface — the core abstraction of sbx.
  *
  * Phase 0 ships the `container` driver (Docker Engine API). Future drivers
@@ -199,6 +242,37 @@ export interface Driver {
    * processes when they'll survive the resume.
    */
   canSnapshot?(id: string): boolean;
+
+  /**
+   * Optional: capture a live sandbox as a reusable template (a paused guest
+   * snapshot + its disks). The source sandbox is resumed before this resolves,
+   * so capturing does not disturb it. Only drivers that can restore a snapshot
+   * into a fresh VMM implement this.
+   */
+  createTemplate?(opts: CreateTemplateOptions): Promise<TemplateInfo>;
+
+  /**
+   * Optional: bring a sandbox live by restoring a template into a fresh VMM
+   * instead of booting a kernel — the fast path behind `hotcell create
+   * --template`. Implementations must give each clone a fresh identity
+   * (hostname, machine-id, CRNG, clock) since clones share the template's RAM
+   * contents at fork time.
+   */
+  fork?(opts: ForkOptions): Promise<void>;
+
+  /**
+   * Optional: delete a template and its on-disk snapshot. The router takes an
+   * optional driver name to pick which driver's template store to clear;
+   * concrete drivers ignore it.
+   */
+  deleteTemplate?(name: string, driverName?: string): Promise<void>;
+
+  /**
+   * Whether this driver can capture and restore snapshot templates. The router
+   * takes an optional driver name so callers can ask about a driver other than
+   * the one backing a sandbox (e.g. the driver a template was captured on).
+   */
+  supportsTemplates?(driverName?: string): boolean;
 
   /**
    * Optional startup hook: reconcile any host-level egress state (e.g. the

@@ -16,6 +16,7 @@ import { sessionCommand } from "./session.js";
 import { statsCommand } from "./stats.js";
 import { infoCommand } from "./info.js";
 import { capacityCommand } from "./capacity.js";
+import { templateCommand } from "./template.js";
 import { egressCommand } from "./egress.js";
 import { terminalCommand } from "./terminal.js";
 import { tuiCommand } from "./tui.js";
@@ -99,6 +100,9 @@ export async function cli(args: string[]): Promise<number> {
       return imagesCommand(positional, globals, flags);
     case "capacity":
       return capacityCommand(positional, globals);
+    case "template":
+    case "templates":
+      return templateCommand(positional, globals, flags);
     case "egress":
       return egressCommand(positional, globals, flags);
     case "terminal":
@@ -186,10 +190,13 @@ Commands:
     --memory/--cpus/--pids set hard resource caps (override the daemon defaults).
 
   hotcell create [-i] [-n <count>] [--name <handle>] [--image I] [--driver container|firecracker|applevz] [--env K=V,…]
-            [--sleep-after MS] [--egress] [--label K=V,…]
+            [--sleep-after MS] [--egress] [--label K=V,…] [--template <name>]
             [--repo <git-url>] [--ref <branch>] [--branch <name>] [--setup "cmd"] [--autopilot] [--opencode]
             [--memory <MB>] [--cpus <n>] [--pids <n>]
     Provision a standalone persistent sandbox and print its id.
+    --template restores a captured microVM snapshot (see \`hotcell template\`) in
+    milliseconds instead of booting — the workspace and tooling are already in it,
+    so --repo/--setup/--branch/--autopilot are rejected alongside it.
     --autopilot installs autopilot-ai (run the command autopilot) and wires it to the
     LLM gateway (implies --egress; needs an openrouter key and a node-capable image).
     --opencode installs OpenCode as an alternative wired to the same gateway
@@ -247,6 +254,13 @@ Commands:
 
   hotcell capacity
     Show host memory budget, what's committed, and how many more sandboxes fit.
+
+  hotcell template create <name> --from <sandboxId>
+  hotcell template ls [--json]
+  hotcell template rm <name>
+    Capture a running microVM sandbox as a reusable snapshot template, list
+    templates, or delete one. \`hotcell create --template <name>\` restores a
+    template into a fresh sandbox in milliseconds — no kernel boot, no setup.
 
   hotcell stats <id>
     Show live CPU/mem/net usage and accumulated cost for a sandbox.

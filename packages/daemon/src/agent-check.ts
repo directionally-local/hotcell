@@ -93,6 +93,26 @@ async function main(): Promise<void> {
     assert.ok(await conn.stats(), "stats RPC returns");
     ok("stats RPC");
 
+    // reseed (the fork path's fresh-identity op) round-trips. Only entropy is
+    // requested here — hostname/machine-id/clock would mutate the machine this
+    // check runs on. In a guest the agent is PID 1 (root) and the reseed
+    // succeeds; an unprivileged host (CI) can't issue RNDADDENTROPY, so accept
+    // the permission error there rather than requiring root to run the check.
+    if (process.platform !== "linux") {
+      await assert.rejects(() => conn.reseed({ entropyBytes: 32 }), /only supported in a Linux guest/);
+      ok("reseed RPC reaches the handler (reports the non-Linux limitation)");
+    } else if (process.getuid?.() === 0) {
+      await conn.reseed({ entropyBytes: 32 });
+      ok("reseed RPC reseeds the CRNG");
+    } else {
+      await assert.rejects(
+        () => conn.reseed({ entropyBytes: 32 }),
+        /operation not permitted|EPERM/,
+        "an unprivileged reseed must fail on the entropy step, not silently succeed",
+      );
+      ok("reseed RPC reaches the handler (unprivileged host: RNDADDENTROPY needs CAP_SYS_ADMIN)");
+    }
+
     // Egress relay: the agent listens on guest-loopback and forwards each
     // connection out its dialer (vsock in production; HOTCELL_EGRESS_DIAL here).
     // The check hosts the "gateway": an HTTP server on the dialed unix socket.

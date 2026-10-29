@@ -42,7 +42,8 @@
     "bench:container-warm-pool": "npm run build:agent && npm run build --workspace @hotcell/daemon && node scripts/bench-container-warm-pool.mjs",
     "smoke:fc": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/smoke-fc.js",
     "e2e:harness": "npm run build && node packages/daemon/dist/e2e-harness.js",
-    "bench:density": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/density-bench.js"
+    "bench:density": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/density-bench.js",
+    "check:fc-fork": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/fc-fork-check.js"
   },
   "engines": {
     "node": ">=20"

@@ -81,6 +81,27 @@ export interface SandboxRecord {
 }
 
 /**
+ * A captured microVM template, as persisted by the daemon. The driver owns the
+ * snapshot on disk; this row is the index the API/SDK/CLI list from, and it
+ * carries the image + resource shape a fork must match.
+ */
+export interface TemplateRecord {
+  /** Stable, URL-safe name (also the on-disk directory name). */
+  name: string;
+  /** Driver that captured it — a fork is routed back to the same driver. */
+  driver: string;
+  /** Image the template was captured from. */
+  image: string;
+  /** Resource shape the snapshot was taken at; a fork must match it exactly. */
+  limits: ResourceLimits;
+  /** Sandbox it was captured from (provenance only). */
+  sourceSandboxId?: string;
+  createdAt: string;
+  /** Bytes the snapshot + disks occupy on the host. */
+  sizeBytes: number;
+}
+
+/**
  * Cumulative, time-integrated resource usage for a sandbox — the basis of the
  * cost meter. Accumulated by the metrics sampler and persisted, so totals carry
  * across daemon restarts. The two `last*` fields are sampler bookkeeping.

@@ -32,6 +32,8 @@ jobs:
         run: npm run check:filemodes
       - name: firecracker host-agnostic checks
         run: npm run check:fc
+      - name: microVM snapshot-fork contract (no KVM)
+        run: npm run check:fc-fork
       - name: audit + log redaction + backup-id checks (no Docker)
         run: npm run check:audit
       - name: agent protocol check (VM-free, Unix + authenticated TCP)
@@ -73,6 +75,8 @@ jobs:
         run: npm run check:filemodes
       - name: firecracker host-agnostic checks
         run: npm run check:fc
+      - name: microVM snapshot-fork contract (no KVM)
+        run: npm run check:fc-fork
       - name: audit + log redaction + backup-id checks (no Docker)
         run: npm run check:audit
       - name: agent protocol check (VM-free, Unix + authenticated TCP)
