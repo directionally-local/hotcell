@@ -34,6 +34,7 @@
       "extra-files": [
         { "type": "json", "path": "packages/sdk/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "packages/daemon/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "docs/openapi.json", "jsonpath": "$.info.version" },
         { "type": "json", "path": "packages/daemon/package.json", "jsonpath": "$.devDependencies['@hotcell/sdk']" },
         { "type": "json", "path": "packages/cli/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "packages/cli/package.json", "jsonpath": "$.dependencies['@hotcell/daemon']" },
