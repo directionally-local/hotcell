@@ -9,20 +9,37 @@ import {
 } from "../src/sizing.js";
 
 describe("sizing model", () => {
-  it("refuses to invent numbers for an unmeasured profile", () => {
+  it("sizes the measured light profile on containers", () => {
     const s = sizeHost({ profile: "light", driver: "container" });
+    // (16 MiB peak + 2 MiB baseline) × 1.25 = 22.5 → rounded up.
+    assert.equal(s.totals.memoryMb, 23);
+    assert.equal(s.totals.vcpus, 2);
+    assert.equal(s.totals.diskGb, 1);
+    assert.equal(s.ok, true);
+    assert.deepEqual(s.missing, []);
+  });
+
+  it("sizes the measured medium profile on containers", () => {
+    const s = sizeHost({ profile: "medium", driver: "container" });
+    // (988 MiB peak + 2 MiB baseline) × 1.25 = 1237.5 → rounded up.
+    assert.equal(s.totals.memoryMb, 1238);
+    assert.equal(s.totals.vcpus, 3);
+    assert.equal(s.ok, true);
+  });
+
+  it("refuses to invent numbers for an unmeasured profile", () => {
+    const s = sizeHost({ profile: "heavy", driver: "applevz" });
     assert.equal(s.ok, false);
     assert.equal(s.totals.memoryMb, null);
-    assert.equal(s.totals.vcpus, null);
     assert.equal(s.totals.diskGb, null);
-    assert.ok(s.missing.includes("peakMemoryMb"));
+    assert.ok(s.missing.includes("baselineMb"));
     assert.ok(s.missing.includes("diskGb"));
   });
 
   it("sizes the measured heavy profile on containers", () => {
     const s = sizeHost({ profile: "heavy", driver: "container" });
-    // 24 GiB peak floor × 1.25 headroom, one agent.
-    assert.equal(s.totals.memoryMb, 30720);
+    // (24 GiB peak floor + 2 MiB container baseline) × 1.25 headroom, one agent.
+    assert.equal(s.totals.memoryMb, 30723);
     assert.equal(s.totals.vcpus, 16);
     // Average CPU and disk are still unmeasured, so the result is incomplete.
     assert.equal(s.ok, false);
@@ -69,10 +86,13 @@ describe("sizing model", () => {
 
   it("marks only measured constants as measured", () => {
     assert.equal(DRIVER_BASELINES.firecracker.measured, true);
-    assert.equal(DRIVER_BASELINES.container.measured, false);
+    assert.equal(DRIVER_BASELINES.container.measured, true);
     assert.equal(DRIVER_BASELINES.applevz.measured, false);
+    assert.equal(SIZING_PROFILES.light.measured, true);
+    assert.equal(SIZING_PROFILES.medium.measured, true);
+    // Heavy still lacks average CPU and disk.
+    assert.equal(SIZING_PROFILES.heavy.measured, false);
     for (const profile of Object.values(SIZING_PROFILES)) {
-      assert.equal(profile.measured, false, `${profile.profile} has no full measurement yet`);
       assert.ok(profile.basis.length > 0);
     }
   });
