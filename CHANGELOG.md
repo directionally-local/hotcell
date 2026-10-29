@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.34](https://github.com/directionally-local/hotcell/compare/v0.1.33...v0.1.34) (2026-10-29)
+
+
+### Features
+
+* **api:** single route table as the source of truth ([#54](https://github.com/directionally-local/hotcell/issues/54)) ([dbb750e](https://github.com/directionally-local/hotcell/commit/dbb750e9d5cce253529da26e1ea18d1842e74d58))
+* **firecracker:** snapshot-fork microVM templates ([#50](https://github.com/directionally-local/hotcell/issues/50)) ([dce9577](https://github.com/directionally-local/hotcell/commit/dce9577c545a7921a4a7a36515b6eefbf45bb7e9))
+
+
+### Fixes
+
+* **egress:** auto-wire /v1 for OpenAI-SDK providers; test Responses usage ([#55](https://github.com/directionally-local/hotcell/issues/55)) ([1e1ecd8](https://github.com/directionally-local/hotcell/commit/1e1ecd8af9f4c3a5c137ad95ff5001d6ea85ad67))
+* **release:** bump docs/openapi.json version in release PRs ([#56](https://github.com/directionally-local/hotcell/issues/56)) ([0a4e7ab](https://github.com/directionally-local/hotcell/commit/0a4e7ab13068ffb3076e87d904a205fcdfdc2552))
+
 ## [0.1.33](https://github.com/directionally-local/hotcell/compare/v0.1.32...v0.1.33) (2026-10-28)
 
 
