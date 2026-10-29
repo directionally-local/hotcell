@@ -36,6 +36,7 @@ npm ci
 npm run build:agent                 # static Linux amd64 + arm64 guest binaries
 npm run build                       # compile all TypeScript workspaces
 npm run typecheck:fast              # fast TS check; run after build
+npm test                            # fast unit tests (node:test + tsx, no build)
 npm run test:agent                  # Go unit tests (no VM required)
 npm run check:agent                 # agent protocol over Unix + authenticated TCP
 npm run check:container-agent       # container-driver Unix path with fake Docker
@@ -52,7 +53,7 @@ npm run bench:container-warm-pool   # live Docker cold-vs-warm burst benchmark
 
 `npm run build` does not build the Go agent. Build it before creating containers from a source checkout. The daemon package's `prepack` bundles both static agents; verify with `npm pack --dry-run --workspace @hotcell/daemon`.
 
-There is no general-purpose JavaScript unit-test runner, linter, or formatter. Use the targeted `check:*` scripts, Go tests, TypeScript builds, and live smoke tests. `smoke:fc`/`smoke:fc:full` require a KVM-capable Linux host; `smoke:vz` requires Apple VZ.
+`npm test` runs the fast unit layer (`node:test` against source via `tsx`, no build or Docker). There is no linter or formatter. Use the targeted `check:*` scripts, Go tests, TypeScript builds, and live smoke tests for everything else. `smoke:fc`/`smoke:fc:full` require a KVM-capable Linux host; `smoke:vz` requires Apple VZ.
 
 ## Architecture notes
 

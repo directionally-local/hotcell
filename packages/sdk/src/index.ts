@@ -1169,7 +1169,7 @@ function envVar(name: string): string | undefined {
 }
 
 /** Parse a `text/event-stream` body into typed JSON events. */
-async function* parseSSE<T>(
+export async function* parseSSE<T>(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<T> {
   const reader = body.getReader();

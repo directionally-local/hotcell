@@ -17,6 +17,7 @@ import { buildProviders } from "../proxy/egress.js";
 import { DRIVER_NAMES } from "../driver/index.js";
 import { emptyUsage, SandboxStore } from "../store.js";
 import { acceptWebSocket } from "./ws.js";
+import { formatSseEvent } from "./sse.js";
 import {
   BodyTooLargeError,
   errorMessage,
@@ -1746,7 +1747,7 @@ async function execInSandbox(
   });
 
   const write = (event: ExecEvent) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    res.write(formatSseEvent(event));
   };
 
   // The stream is live work: the reaper must see this sandbox as active for
@@ -1831,10 +1832,10 @@ async function watchFiles(
       id,
       watchPath,
       { intervalMs, signal: controller.signal },
-      (event) => res.write(`data: ${JSON.stringify(event)}\n\n`),
+      (event) => res.write(formatSseEvent(event)),
     );
   } catch (err) {
-    res.write(`data: ${JSON.stringify({ type: "error", error: String(err) })}\n\n`);
+    res.write(formatSseEvent({ type: "error", error: String(err) }));
   } finally {
     stopKeepalive();
     res.end();
@@ -2010,13 +2011,13 @@ async function streamLogs(
       id,
       proc.logPath,
       { follow, signal: controller.signal },
-      (data) => res.write(`data: ${JSON.stringify({ type: "log", data })}\n\n`),
+      (data) => res.write(formatSseEvent({ type: "log", data })),
     );
   } catch (err) {
-    res.write(`data: ${JSON.stringify({ type: "log", data: errorMessage(err) })}\n\n`);
+    res.write(formatSseEvent({ type: "log", data: errorMessage(err) }));
   } finally {
     stopKeepalive();
-    res.write(`data: ${JSON.stringify({ type: "end" })}\n\n`);
+    res.write(formatSseEvent({ type: "end" }));
     res.end();
   }
 }

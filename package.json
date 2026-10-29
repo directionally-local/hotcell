@@ -10,6 +10,7 @@
   "scripts": {
     "build": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && npm run build --workspace @hotcell/mastra",
     "typecheck:fast": "tsrs --noEmit -p packages/sdk/tsconfig.json && tsrs --noEmit -p packages/daemon/tsconfig.json && tsrs --noEmit -p packages/cli/tsconfig.json && tsrs --noEmit -p packages/mastra/tsconfig.json",
+    "test": "node --import tsx --test packages/daemon/test/*.test.ts packages/sdk/test/*.test.ts",
     "dev:daemon": "npm run dev --workspace @hotcell/daemon",
     "dev:cli": "npm run dev --workspace @hotcell/cli",
     "smoke": "npm run build && node packages/daemon/dist/smoke.js",
