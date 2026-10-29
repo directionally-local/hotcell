@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { platform } from "node:os";
+import { platform, totalmem } from "node:os";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import { importEnvInteractive, keysCommand } from "./keys.js";
 import { loadKeys } from "./keystore.js";
 import { c, confirm, readKey, select, textInput } from "./prompts.js";
 import { HotcellClient } from "@hotcell/sdk";
+import { sizeHost } from "@hotcell/daemon/dist/sizing.js";
 
 // Detect a source checkout by the VZ helper's Swift package at the repo root.
 // Since 0.1.18/0.1.19 the Apple VZ runtime (ad-hoc-signed helper + guest kernel
@@ -39,6 +40,23 @@ const REC = {
   image: "hotcell-base (git + node + python)",
 };
 
+/**
+ * "this machine fits ~N agents" — the line the sizing model exists to produce.
+ * Uses the medium profile (a typical TypeScript app) and the container driver,
+ * which is what the recommended setup runs. Returns null when the model has no
+ * measurement to stand on, so the installer stays quiet rather than guessing.
+ */
+function fitsLine(): string | null {
+  const hostMb = Math.round(totalmem() / (1024 * 1024));
+  const s = sizeHost({ profile: "medium", driver: "container" });
+  const peak = s.perAgent.peakMemoryMb;
+  const baseline = s.perAgent.baselineMb;
+  if (!s.ok || peak === null || baseline === null) return null;
+  const perAgent = (peak + baseline) * s.headroom;
+  const fits = Math.floor(hostMb / perAgent);
+  return `~${fits} medium agents on this ${(hostMb / 1024).toFixed(0)} GB machine`;
+}
+
 export async function setupCommand(
   globals: GlobalArgs,
   _flags: Record<string, string | boolean>,
@@ -55,7 +73,10 @@ export async function setupCommand(
   out.write(`    ${c.dim}access${c.reset}      ${REC.access}\n`);
   out.write(`    ${c.dim}egress${c.reset}      ${REC.egress}\n`);
   out.write(`    ${c.dim}isolation${c.reset}   ${REC.isolation}\n`);
-  out.write(`    ${c.dim}image${c.reset}       ${REC.image}\n\n`);
+  out.write(`    ${c.dim}image${c.reset}       ${REC.image}\n`);
+  const fits = fitsLine();
+  if (fits) out.write(`    ${c.dim}agents${c.reset}      ${fits}\n`);
+  out.write("\n");
   out.write(`  ${c.bold}⏎${c.reset} use recommended   ${c.dim}·${c.reset}   ${c.bold}c${c.reset} customize each   ${c.dim}·${c.reset}   ${c.bold}q${c.reset} cancel\n`);
 
   let chosen: Record<string, string> = {};

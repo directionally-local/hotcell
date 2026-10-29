@@ -19,6 +19,8 @@
  *   --sample-ms N                      sampling interval (default 250)
  *   --json                             machine-readable output only
  *   --density                          step 2: create agents until admission refuses
+ *   --mem-mb N / --cpus N              limits to request per agent in density mode
+ *                                      (default: the profile's measured peak, 1 CPU)
  *
  * Env:
  *   HOTCELL_DENSITY_IMAGE   sandbox image (default ghcr.io/sinameraji/hotcell-base:latest)
@@ -28,6 +30,8 @@
  * Report the band, not one rep: run it at least three times. The sandbox-dax
  * memory floor moved 11.0–14.2 GiB across byte-identical runs.
  */
+
+import { DRIVER_BASELINES, SIZING_PROFILES } from "./sizing.js";
 
 const ENDPOINT = (process.env.HOTCELL_ENDPOINT ?? "http://127.0.0.1:4750").replace(/\/$/, "");
 const API_KEY = process.env.HOTCELL_API_KEY ?? process.env.SBX_API_KEY ?? "";
@@ -307,6 +311,22 @@ async function measureBaseline(sampleMs: number): Promise<{ peakMemMb: number; a
 }
 
 /**
+ * The limit to *request* for a density run. Admission charges what you ask for,
+ * so requesting the profile's generous benchmark cap would measure the cap
+ * rather than the workload. Size each agent to its measured footprint instead,
+ * rounded up to the next 256 MiB.
+ */
+function densityMemMb(profile: Profile): number {
+  if (DENSITY_MEM_MB !== undefined) return DENSITY_MEM_MB;
+  const sized = SIZING_PROFILES[profile.name];
+  const baseline = DRIVER_BASELINES[DRIVER as keyof typeof DRIVER_BASELINES]?.memoryMb ?? 0;
+  if (sized.measured && sized.peakMemoryMb !== null) {
+    return Math.ceil((sized.peakMemoryMb + baseline) / 256) * 256;
+  }
+  return profile.memoryMb;
+}
+
+/**
  * Step 2 of the density question: on one fixed host, how many agents run before
  * admission control refuses the next create? Sandboxes are created one at a
  * time and each starts the profile's task immediately, so the host carries a
@@ -326,8 +346,8 @@ async function runDensity(
       const created = await api<{ id: string }>("POST", "/sandboxes", {
         image: IMAGE,
         driver: DRIVER,
-        memoryMb: profile.memoryMb,
-        cpus: profile.cpus,
+        memoryMb: densityMemMb(profile),
+        cpus: DENSITY_CPUS,
         persist: false,
         networked: true,
       });
@@ -367,6 +387,8 @@ const AGENTS = Number(flag("agents") ?? "1");
 const SAMPLE_MS = Number(flag("sample-ms") ?? "250");
 const JSON_ONLY = argv.includes("--json");
 const DENSITY = argv.includes("--density");
+const DENSITY_MEM_MB = flag("mem-mb") === undefined ? undefined : Number(flag("mem-mb"));
+const DENSITY_CPUS = Number(flag("cpus") ?? "1");
 const requested = flag("profile") ?? "all";
 const names: ProfileName[] =
   requested === "all" ? ["light", "medium", "heavy"] : [requested as ProfileName];
