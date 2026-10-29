@@ -16,7 +16,7 @@
  *   --profile light|medium|heavy|all   (default: all)
  *   --agents N                         sandboxes to run concurrently (default 1)
  *   --driver container|firecracker|applevz (default container)
- *   --sample-ms N                      sampling interval (default 1000)
+ *   --sample-ms N                      sampling interval (default 250)
  *   --json                             machine-readable output only
  *
  * Env:
@@ -54,10 +54,25 @@ const LIGHT_REPO = `set -e
 mkdir -p /workspace/app/src
 cd /workspace/app
 for i in $(seq 1 40); do
-  printf 'def f%d(x):\\n    return x * %d\\n' "$i" "$i" > "src/mod$i.py"
+  cat > "src/mod$i.py" <<EOF
+def f$i(x):
+    return x * $i
+EOF
 done
-printf 'import glob, importlib.util, os\\n\\ntotal = 0\\nfor path in sorted(glob.glob("src/*.py")):\\n    spec = importlib.util.spec_from_file_location(os.path.basename(path)[:-3], path)\\n    mod = importlib.util.module_from_spec(spec)\\n    spec.loader.exec_module(mod)\\n    total += mod.f1(2)\\nprint("ok", total)\\n' > main.py
-printf '{"name":"light","version":"1.0.0"}\\n' > package.json
+cat > main.py <<'EOF'
+import glob
+import importlib.util
+import os
+
+total = 0
+for path in sorted(glob.glob("src/*.py")):
+    name = os.path.basename(path)[:-3]
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    total += mod.f1(2)
+print("ok", total)
+EOF
 `;
 
 const PROFILES: Record<ProfileName, Profile> = {
@@ -67,7 +82,8 @@ const PROFILES: Record<ProfileName, Profile> = {
     memoryMb: 1024,
     cpus: 1,
     setup: [LIGHT_REPO],
-    task: "cd /workspace/app && python3 -m compileall -q src && python3 main.py",
+    // Long enough to sample: a real script workload is not a 300 ms blip.
+    task: "cd /workspace/app && python3 -m compileall -q src && for i in $(seq 1 200); do python3 main.py > /dev/null; done",
     diskPaths: ["/workspace/app"],
   },
   medium: {
@@ -292,7 +308,7 @@ const flag = (name: string): string | undefined => {
 };
 const DRIVER = flag("driver") ?? "container";
 const AGENTS = Number(flag("agents") ?? "1");
-const SAMPLE_MS = Number(flag("sample-ms") ?? "1000");
+const SAMPLE_MS = Number(flag("sample-ms") ?? "250");
 const JSON_ONLY = argv.includes("--json");
 const requested = flag("profile") ?? "all";
 const names: ProfileName[] =
