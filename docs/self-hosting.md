@@ -45,4 +45,4 @@ hotcell is **single-tenant** by design: the API offers arbitrary command executi
 - **Runtime drivers** — the core abstraction (`create`/`exec`/`openTerminal`/files/ports/backup/stats/…), selected by `HOTCELL_DRIVER` or per sandbox at create time. All three ship live behind the same interface: `container` (Docker, Linux + macOS; optional `HOTCELL_CONTAINER_WARM_POOL`), `firecracker` (Linux + KVM), and `applevz` (macOS) microVMs — the microVM drivers with warm pools and memory-snapshot pause/resume — so the daemon/SDKs/CLI are unchanged when you swap isolation tiers.
 - **SDKs** — TypeScript + Python, mirroring the Cloudflare Sandbox surface so existing harnesses adopt with near-zero friction.
 
-See [plan.md](plan.md) for the full spec and phased roadmap, and `KIMI.md` for contributor/agent context.
+See [plan.md](plan.md) for the full spec and phased roadmap, and [AGENTS.md](../AGENTS.md) for contributor/agent instructions.
