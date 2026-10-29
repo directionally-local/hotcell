@@ -8,6 +8,7 @@ import { kernelFor, type KernelLanguage } from "../kernels.js";
 import { pauseSandbox, resumeSandbox } from "../lifecycle.js";
 import { CapacityError } from "../capacity.js";
 import type { Capacity } from "../capacity.js";
+import { sizeHost, type SizingInput } from "../sizing.js";
 import type { BootScheduler } from "../boot-scheduler.js";
 import { computeCost } from "../cost.js";
 import { log } from "../logger.js";
@@ -682,6 +683,20 @@ async function handle(
         ...deps.capacity.snapshot(),
         boot: deps.bootScheduler?.snapshot(),
       });
+    }
+
+    // Shared per-agent density model. The installer, the dashboard and the
+    // website calculator all size a host through this one function, so none of
+    // them invents its own "this server fits ~N agents" arithmetic. Unmeasured
+    // inputs come back as `null` with `ok: false` and a `missing` list rather
+    // than a confident guess.
+    case "capacity.sizing": {
+      const body = await readJson(req, config.maxBodyBytes);
+      try {
+        return sendJson(res, 200, sizeHost(body as SizingInput));
+      } catch (err) {
+        return sendJson(res, 400, { error: errorMessage(err) });
+      }
     }
 
     // Hot-reload provider keys after `hotcell keys add/rm` — no daemon restart.

@@ -99,7 +99,7 @@ export async function cli(args: string[]): Promise<number> {
     case "images":
       return imagesCommand(positional, globals, flags);
     case "capacity":
-      return capacityCommand(positional, globals);
+      return capacityCommand(positional, globals, flags);
     case "template":
     case "templates":
       return templateCommand(positional, globals, flags);
@@ -253,8 +253,12 @@ Commands:
     List recommended base images (and what each ships) for --image. Any public
     image works; --json for machine-readable output.
 
-  hotcell capacity
+  hotcell capacity [--sizing] [--profile light|medium|heavy]
+                   [--driver container|firecracker|applevz]
+                   [--people N] [--agents N] [--peak 0.5] [--headroom 1.25]
     Show host memory budget, what's committed, and how many more sandboxes fit.
+    --sizing sizes a host for N agents from the shared per-agent density model;
+    inputs with no measurement behind them print "not measured", not a guess.
 
   hotcell template create <name> --from <sandboxId>
   hotcell template ls [--json]

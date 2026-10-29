@@ -405,6 +405,58 @@ export interface CapacitySnapshot {
   pool?: { spares: number; reservedMb: number };
 }
 
+/** Workload profile the density model sizes for. */
+export type WorkloadProfile = "light" | "medium" | "heavy";
+
+/** Runtime driver with a distinct per-sandbox baseline. */
+export type SizingDriver = "container" | "firecracker" | "applevz";
+
+/** Input to `POST /capacity/sizing`. Every field is optional. */
+export interface SizingInput {
+  /** People sharing the host. Default 1. */
+  people?: number;
+  /** Agents each person runs at once. Default 1. */
+  agentsPerPerson?: number;
+  /** Workload profile. Default `medium`. */
+  profile?: WorkloadProfile;
+  /** Runtime driver. Default `container`. */
+  driver?: SizingDriver;
+  /** Fraction of agents at peak simultaneously, 0 < f ≤ 1. Default 1. */
+  peakFraction?: number;
+  /** Multiplier for OS, page cache and the daemon. Default 1.25. */
+  headroom?: number;
+}
+
+/**
+ * Result of `POST /capacity/sizing`. `ok` is false when any footprint field
+ * needed for the totals has no measurement behind it; those totals are `null`
+ * and `missing` names the gaps. Do not render a `null` total as a number.
+ */
+export interface SizingResult {
+  ok: boolean;
+  profile: WorkloadProfile;
+  driver: SizingDriver;
+  agents: number;
+  peakFraction: number;
+  headroom: number;
+  perAgent: {
+    peakMemoryMb: number | null;
+    avgMemoryMb: number | null;
+    burstCpus: number | null;
+    avgCpus: number | null;
+    diskGb: number | null;
+    baselineMb: number | null;
+  };
+  totals: {
+    memoryMb: number | null;
+    vcpus: number | null;
+    vcpusAverage: number | null;
+    diskGb: number | null;
+  };
+  missing: string[];
+  notes: string[];
+}
+
 /** Daemon metadata from `GET /info`. */
 export interface DaemonInfo {
   /** Daemon package version (added 0.1.7; undefined on older daemons). */
@@ -570,6 +622,15 @@ export class HotcellClient {
   /** Host capacity + admission status (committed vs budget memory, how many more fit). */
   async capacity(): Promise<CapacitySnapshot> {
     return this.request<CapacitySnapshot>("GET", "/capacity");
+  }
+
+  /**
+   * Size a host for N agents using the daemon's shared per-agent density model.
+   * Unmeasured inputs come back as `null` totals with `ok: false` — check `ok`
+   * before showing a number to a user.
+   */
+  async sizing(input: SizingInput = {}): Promise<SizingResult> {
+    return this.request<SizingResult>("POST", "/capacity/sizing", input);
   }
 
   /** List all workspace backups across sandboxes. */
