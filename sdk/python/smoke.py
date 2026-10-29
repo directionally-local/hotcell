@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, HERE)
 
-from hotcell import HotcellClient, HotcellError  # noqa: E402
+from hotcell import EgressPolicy, HotcellClient, HotcellError  # noqa: E402
 
 PORT = 4760
 PROXY_PORT = 4761
@@ -69,6 +69,11 @@ def main() -> int:
         wait_healthy()
         log(f"daemon up at {ENDPOINT}")
         client = HotcellClient(endpoint=ENDPOINT)
+
+        # capacity() parity with the TS SDK
+        snap = client.capacity()
+        assert "memory" in snap and "fits" in snap, snap
+        log("capacity snapshot works")
 
         # create-time `setup` provisioning (parity with the TS smoke)
         provisioned = client.get_sandbox(
@@ -124,6 +129,12 @@ def main() -> int:
         # what we exercise; the daemon smoke covers key injection + metering).
         minted = sb.create_egress_token()
         assert minted.get("token"), "egress mint returned no token"
+        scoped = sb.create_egress_token(
+            hotcell.EgressPolicy(spend_cap_usd=1.0, models=["gpt-4o"])
+        )
+        assert scoped["policy"]["spendCapUsd"] == 1.0, scoped
+        assert scoped["policy"]["models"] == ["gpt-4o"], scoped
+        sb.revoke_egress_token(scoped["token"])
         listed = sb.list_egress_tokens()
         assert minted["token"] in listed.get("tokens", []), "minted token not listed"
         sb.revoke_egress_token(minted["token"])
@@ -147,6 +158,13 @@ def main() -> int:
         assert sb.status == "running"
         assert sb.read_file("/workspace/keep.txt") == "v1", "workspace lost across stop/start"
         log("stop/start persistence works")
+
+        # pause() parity: container driver degrades to stop-with-volume, and the
+        # next operation auto-resumes.
+        sb.pause()
+        assert sb.status == "paused", sb.status
+        assert sb.read_file("/workspace/keep.txt") == "v1", "workspace lost across pause"
+        log("pause + auto-resume works")
 
         # destroy
         sb.destroy()

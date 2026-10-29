@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 from urllib.parse import quote
 
 __all__ = [
@@ -46,6 +46,7 @@ __all__ = [
     "CodeResult",
     "BackupInfo",
     "FileChangeEvent",
+    "EgressPolicy",
     "get_sandbox",
 ]
 
@@ -324,6 +325,46 @@ class FileChangeEvent:
     path: str
 
 
+@dataclass
+class EgressPolicy:
+    """Per-token egress policy, mirroring the TS ``EgressPolicy``.
+
+    Every field is optional; an empty policy means "unlimited". Enforced by the
+    daemon's egress gateway. Pass one to ``create_egress_token()`` or as
+    ``get_sandbox(egress=...)`` to bind the minted token to it.
+    """
+
+    #: ISO timestamp after which the token is rejected (403).
+    expires_at: Optional[str] = None
+    #: Sugar accepted on mint: expire ``ttl_ms`` after creation.
+    ttl_ms: Optional[int] = None
+    #: Cumulative USD this token may spend (402 once reached).
+    spend_cap_usd: Optional[float] = None
+    #: Sliding-window rate limit, e.g. ``{"calls": 60, "windowMs": 60000}``.
+    rate_limit: Optional[Dict[str, Any]] = None
+    #: Allowed model ids/prefix-globs. Omit = all.
+    models: Optional[List[str]] = None
+    #: Allowed provider names. Omit = every configured provider.
+    providers: Optional[List[str]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Wire form (camelCase, ``None`` fields omitted)."""
+        out: Dict[str, Any] = {}
+        if self.expires_at is not None:
+            out["expiresAt"] = self.expires_at
+        if self.ttl_ms is not None:
+            out["ttlMs"] = self.ttl_ms
+        if self.spend_cap_usd is not None:
+            out["spendCapUsd"] = self.spend_cap_usd
+        if self.rate_limit is not None:
+            out["rateLimit"] = self.rate_limit
+        if self.models is not None:
+            out["models"] = self.models
+        if self.providers is not None:
+            out["providers"] = self.providers
+        return out
+
+
 # --- client ----------------------------------------------------------------
 
 
@@ -368,10 +409,14 @@ class HotcellClient:
         labels: Optional[Dict[str, str]] = None,
         persist: Optional[bool] = None,
         sleep_after: Optional[int] = None,
-        egress: Optional[bool] = None,
+        egress: Optional[Union[bool, "EgressPolicy", Dict[str, Any]]] = None,
+        egress_spend_cap_usd: Optional[float] = None,
         setup: Optional[List[str]] = None,
         repo: Optional[str] = None,
         repo_ref: Optional[str] = None,
+        driver: Optional[str] = None,
+        branch: Optional[str] = None,
+        networked: Optional[bool] = None,
         memory_mb: Optional[float] = None,
         cpus: Optional[float] = None,
         pids_limit: Optional[int] = None,
@@ -404,13 +449,21 @@ class HotcellClient:
         if sleep_after is not None:
             body["sleepAfter"] = sleep_after
         if egress is not None:
-            body["egress"] = egress
+            body["egress"] = egress.to_dict() if isinstance(egress, EgressPolicy) else egress
+        if egress_spend_cap_usd is not None:
+            body["egressSpendCapUsd"] = egress_spend_cap_usd
         if setup is not None:
             body["setup"] = setup
         if repo is not None:
             body["repo"] = repo
         if repo_ref is not None:
             body["repoRef"] = repo_ref
+        if driver is not None:
+            body["driver"] = driver
+        if branch is not None:
+            body["branch"] = branch
+        if networked is not None:
+            body["networked"] = networked
         if memory_mb is not None:
             body["memoryMb"] = memory_mb
         if cpus is not None:
@@ -499,6 +552,11 @@ class HotcellClient:
     def info(self) -> Dict[str, Any]:
         """Daemon info: driver, default image, proxy port, cost rates."""
         return self.request("GET", "/info")
+
+    def capacity(self) -> Dict[str, Any]:
+        """Host capacity + admission status (committed vs budget memory, how
+        many more default-reservation sandboxes still fit)."""
+        return self.request("GET", "/capacity")
 
     def list_backups(self) -> List[BackupInfo]:
         data = self.request("GET", "/backups")
@@ -633,6 +691,14 @@ class Sandbox:
             self._client.request("POST", f"/sandboxes/{self.id}/start")
         )
 
+    def pause(self) -> None:
+        """Fast-pause: a memory snapshot on microVM drivers (processes come back
+        alive on resume); stop-with-volume on the container driver (workspace
+        survives, processes do not). Any later operation auto-resumes."""
+        self._info = SandboxInfo.from_dict(
+            self._client.request("POST", f"/sandboxes/{self.id}/pause")
+        )
+
     def destroy(self) -> None:
         self._client.request("DELETE", f"/sandboxes/{self.id}")
 
@@ -649,10 +715,18 @@ class Sandbox:
 
     # -- egress credential proxy (LLM gateway) ------------------------------
 
-    def create_egress_token(self) -> Dict[str, Any]:
+    def create_egress_token(
+        self, policy: Optional[Union["EgressPolicy", Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
         """Mint an egress token; returns {token, providers}. Point the sandbox's
-        LLM SDK at a provider baseUrl and use the token in place of the real key."""
-        return self._client.request("POST", f"/sandboxes/{self.id}/egress-tokens")
+        LLM SDK at a provider baseUrl and use the token in place of the real key.
+
+        Pass an ``EgressPolicy`` (or an equivalent dict) to bind the token to a
+        TTL, spend cap, rate limit, or model/provider scope."""
+        body = policy.to_dict() if isinstance(policy, EgressPolicy) else (policy or {})
+        return self._client.request(
+            "POST", f"/sandboxes/{self.id}/egress-tokens", body
+        )
 
     def list_egress_tokens(self) -> Dict[str, Any]:
         """List this sandbox's egress tokens and available provider routes."""

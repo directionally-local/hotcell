@@ -42,7 +42,7 @@ hotcell create -n 5 --name feat --branch auto --autopilot \
     --repo https://github.com/you/app
 ```
 
-Five isolated cells, each with the repo cloned, its own branch (`feat-1`…`feat-5`), and Autopilot preinstalled and wired to the gateway (`--autopilot` implies `--egress`). Live per-cell progress while they provision — slow setups can't falsely time out. Open a terminal per cell and run Autopilot on a different feature:
+Five isolated cells, each with the repo cloned, its own auto-named branch (`hotcell/<id>`, so pushes never collide), and Autopilot preinstalled and wired to the gateway (`--autopilot` implies `--egress`). `--name feat` labels the cells `feat-1`…`feat-5`; pass a branch name (`--branch feat`) to get `feat-1`…`feat-5` branches instead. Live per-cell progress while they provision — slow setups can't falsely time out. Open a terminal per cell and run Autopilot on a different feature:
 
 ```bash
 hotcell terminal <id>      # inside: cd app && autopilot

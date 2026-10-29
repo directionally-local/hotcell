@@ -84,6 +84,10 @@ print(sandbox.exec("python3 -c 'print(2+2)'").stdout)   # "4\n"
 sandbox.destroy()
 ```
 
+Both SDKs expose the same create options (`driver`, `branch`, `networked`,
+`egress` / `egress_spend_cap_usd`, resource limits, `template`, `detach`) and the
+same lifecycle calls (`pause`, `capacity`); the Python client is snake_cased.
+
 ## Everything a sandbox gives you
 
 - **Sandboxes** — create / list / stop / start / destroy; `/workspace` on a named volume that survives stop/start and daemon restarts.

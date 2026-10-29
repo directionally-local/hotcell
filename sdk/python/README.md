@@ -35,14 +35,16 @@ Python ≥ 3.9 and a running hotcell daemon.
 
 ## Surface
 
-`HotcellClient`: `get_sandbox`, `list`, `health`, `info`, `list_backups`, `delete_backup`.
+`HotcellClient`: `get_sandbox`, `list`, `health`, `info`, `capacity`, `list_backups`,
+`delete_backup`.
 
-`Sandbox`: `exec`, `exec_stream`, `stop`, `start`, `destroy`, `metrics`,
+`Sandbox`: `exec`, `exec_stream`, `stop`, `start`, `pause`, `destroy`, `metrics`,
 `write_file`, `read_file`, `mkdir`, `list_files`, `watch`, `start_process`,
 `list_processes`, `kill_process`, `stream_logs`, `wait_for_port`, `expose_port`,
 `unexpose_port`, `list_exposed_ports`, `set_env_vars`, `get_env_vars`,
 `create_session`, `list_sessions`, `create_backup`, `restore_backup`,
-`list_backups`, `create_code_context`, `list_code_contexts`, `run_code`.
+`list_backups`, `create_code_context`, `list_code_contexts`, `run_code`,
+`create_egress_token`, `list_egress_tokens`, `revoke_egress_token`.
 
 `Session`: `exec`, `exec_stream`, `set_env_vars`, `destroy`.
 `CodeContext`: `run_code`, `destroy`.

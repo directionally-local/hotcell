@@ -115,7 +115,7 @@ With `HOTCELL_EGRESS_ENFORCE=true`, a sandbox can reach *only* the gateway and a
 HOTCELL_EGRESS_ENFORCE=true hotcell start
 ```
 
-> On **macOS Docker Desktop** the firewall can't be installed (the bridge lives in a VM), so enforcement is **advisory** there — the gateway still works, but a process could route around it. Kernel-enforced lockdown on a Mac is the **Apple VZ microVM driver** (shipped) — its guests have **no NIC by default**, so egress is denied by construction and only reaches the gateway over vsock. (A NAT NIC is opt-in for trusted workloads; on that path the allowlist is advisory — proxy-based — not enforced.) The gateway, policy, caps, cost, providers, and allowlist all work on macOS today.
+> On **macOS Docker Desktop** the firewall can't be installed (the bridge lives in a VM), so enforcement is **advisory** there — the gateway still works, but a process could route around it. Kernel-enforced lockdown on a Mac is the **Apple VZ microVM driver** (shipped) — its guests have **no NIC by default**, so egress is denied by construction and only reaches the gateway over vsock. (A NAT NIC is opt-in for trusted workloads on the **Firecracker** driver only — Apple VZ guests have no NIC and ignore `networked`; on the Firecracker path the allowlist is advisory — proxy-based — not enforced.) The gateway, policy, caps, cost, providers, and allowlist all work on macOS today.
 
 **Egress enforcement, by tier** — pick what matches your isolation needs:
 
@@ -123,7 +123,7 @@ HOTCELL_EGRESS_ENFORCE=true hotcell start
 | --- | --- | --- |
 | Container + `HOTCELL_EGRESS_ENFORCE` (Linux) | **Kernel-enforced** | host `DOCKER-USER` iptables, default-drop, on a dedicated bridge (needs `CAP_NET_ADMIN`; degrades to advisory if the daemon can't install rules) |
 | microVM, no NIC (default) | **Enforced by construction** | no network device exists; the vsock gateway is the only route out |
-| microVM, opt-in NAT NIC (`networked: true`) | **Advisory** | proxy env points tools at the gateway; a raw socket bypasses it, unlogged |
+| microVM, opt-in NAT NIC (`networked: true`, Firecracker only) | **Advisory** | proxy env points tools at the gateway; a raw socket bypasses it, unlogged |
 | Container on macOS (Docker Desktop) | **Advisory** | host firewall can't be installed (bridge lives in a VM); proxy env still set |
 
 **`networked: true` is a trusted mode.** It gives a Firecracker guest a real NAT'd NIC, so code in it can open raw sockets to any internet host, and to anything else routable from the host's default-route interface (your LAN / VPC). Use it only for workloads you would run on the host anyway. The driver does fence off the worst targets with per-TAP host firewall rules: the guest can't reach host-local services (all input from its TAP is dropped, including via the TAP gateway IP), can't reach the cloud instance-metadata service (`169.254.0.0/16` is dropped, and IPv6 is disabled on the TAP), and can't be routed into other sandboxes' TAPs or local bridges. Teardown removes every rule it added.
