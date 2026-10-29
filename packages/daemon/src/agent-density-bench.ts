@@ -80,7 +80,8 @@ const PROFILES: Record<ProfileName, Profile> = {
     name: "light",
     label: "scripts / small Python repo",
     memoryMb: 1024,
-    cpus: 1,
+    // Generous caps: a tight cap would measure the cap, not the workload.
+    cpus: 4,
     setup: [LIGHT_REPO],
     // Long enough to sample: a real script workload is not a 300 ms blip.
     task: "cd /workspace/app && python3 -m compileall -q src && for i in $(seq 1 200); do python3 main.py > /dev/null; done",
@@ -90,7 +91,7 @@ const PROFILES: Record<ProfileName, Profile> = {
     name: "medium",
     label: "typical TypeScript web app (~92k lines)",
     memoryMb: 6144,
-    cpus: 2,
+    cpus: 4,
     setup: [
       `set -e
 rm -rf /workspace/app
