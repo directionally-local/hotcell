@@ -34,6 +34,17 @@ Setup is **best-effort** (a non-zero exit is logged, not fatal) and runs once at
 hotcell create --repo https://github.com/me/app --ref main --setup "npm install"
 ```
 
+`--patch <file>` applies a unified diff to the clone before `setup` — useful for
+starting an agent from your uncommitted changes:
+
+```bash
+git diff > /tmp/wip.patch
+hotcell create --repo https://github.com/me/app --patch /tmp/wip.patch --egress
+```
+
+From the SDK, `createRunSandbox({ repo, patch, egress, memoryMb, cpus })` does the
+same in one call (it defaults `egress: true`).
+
 ## Run AI agents on hotcell
 
 hotcell is built to *run agents*, not just containers — a sandbox can come up with a **repo cloned in** (`--repo`), **LLM access wired without keys inside** (`--egress`), **per-token + per-sandbox spend caps**, **resource caps**, and **per-agent cost/observability**.

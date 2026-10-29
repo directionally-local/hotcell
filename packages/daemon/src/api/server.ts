@@ -1081,6 +1081,12 @@ async function createSandbox(
     : undefined;
   const repo = typeof body.repo === "string" && body.repo ? body.repo : undefined;
   const repoRef = typeof body.repoRef === "string" && body.repoRef ? body.repoRef : undefined;
+  // A unified diff applied to the clone before setup (the caller's uncommitted
+  // changes). Requires a repo to apply it to.
+  const patch = typeof body.patch === "string" && body.patch ? body.patch : undefined;
+  if (patch && !repo) {
+    return sendJson(res, 400, { error: "patch requires repo (there is nothing to apply it to)" });
+  }
   // --branch: create + check out a new branch right after the clone, as the first
   // setup step (so it runs before any user setup). `auto` → a generated name.
   const branchRaw = typeof body.branch === "string" && body.branch ? body.branch : undefined;
@@ -1217,7 +1223,7 @@ async function createSandbox(
   };
   const createOpts = {
     id, image, driver: driverName, env, labels, persist, setup: setupSteps,
-    repo, repoRef, limits, networked, writableRootfs, cpuset, onProgress,
+    repo, repoRef, patch, limits, networked, writableRootfs, cpuset, onProgress,
   };
   // A template create restores a snapshot into a fresh VMM — no kernel boot, no
   // clone, no setup — so it skips the boot scheduler entirely (it is already

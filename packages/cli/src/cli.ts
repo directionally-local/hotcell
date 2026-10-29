@@ -183,7 +183,7 @@ run opens setup. Pipes/scripts always get this help instead.
 
 Commands:
   hotcell run "<command>" [--image <image>] [--keep] [--sleep-after <ms>] [--egress]
-         [--repo <git-url>] [--ref <branch>] [--setup "cmd"]
+         [--repo <git-url>] [--ref <branch>] [--patch <file>] [--setup "cmd"]
          [--memory <MB>] [--cpus <n>] [--pids <n>] [--endpoint <url>]
     Create a sandbox, run a command, stream output, then destroy it.
     --egress wires the sandbox to the LLM gateway (provider keys injected by the daemon).
@@ -191,7 +191,7 @@ Commands:
 
   hotcell create [-i] [-n <count>] [--name <handle>] [--image I] [--driver container|firecracker|applevz] [--env K=V,…]
             [--sleep-after MS] [--egress] [--label K=V,…] [--template <name>]
-            [--repo <git-url>] [--ref <branch>] [--branch <name>] [--setup "cmd"] [--autopilot] [--opencode]
+            [--repo <git-url>] [--ref <branch>] [--patch <file>] [--branch <name>] [--setup "cmd"] [--autopilot] [--opencode]
             [--memory <MB>] [--cpus <n>] [--pids <n>]
     Provision a standalone persistent sandbox and print its id.
     --template restores a captured microVM snapshot (see \`hotcell template\`) in
@@ -208,6 +208,7 @@ Commands:
     suffixes: feat-1…feat-N); -i opens the guided create instead (TTY only).
     --driver picks the isolation tier per sandbox (microVMs need a VZ/KVM host).
     --repo clones a git repo into /workspace at create (great for agents).
+    --patch applies a unified diff to the clone before setup (needs --repo).
     --setup runs a shell command once after the container starts (best-effort;
     chain with && for multiple steps, e.g. --setup "npm i x && pip install y").
 
