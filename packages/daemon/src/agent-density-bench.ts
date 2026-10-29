@@ -189,9 +189,8 @@ interface AgentResult {
 }
 
 async function measureAgent(profile: Profile, index: number, sampleMs: number): Promise<AgentResult> {
-  const id = `dens-${profile.name}-${index}-${Date.now().toString(36)}`;
-  await api("POST", "/sandboxes", {
-    id,
+  // The daemon assigns the id; use whatever it returns.
+  const created = await api<{ id: string }>("POST", "/sandboxes", {
     image: IMAGE,
     driver: DRIVER,
     memoryMb: profile.memoryMb,
@@ -199,6 +198,7 @@ async function measureAgent(profile: Profile, index: number, sampleMs: number): 
     persist: false,
     networked: true,
   });
+  const id = created.id;
 
   try {
     for (const command of profile.setup) {
@@ -257,9 +257,7 @@ async function measureAgent(profile: Profile, index: number, sampleMs: number): 
 
 /** Idle footprint of a bare sandbox — the driver baseline, no workload. */
 async function measureBaseline(sampleMs: number): Promise<{ peakMemMb: number; avgMemMb: number }> {
-  const id = `dens-baseline-${Date.now().toString(36)}`;
-  await api("POST", "/sandboxes", {
-    id,
+  const created = await api<{ id: string }>("POST", "/sandboxes", {
     image: IMAGE,
     driver: DRIVER,
     memoryMb: 512,
@@ -267,6 +265,7 @@ async function measureBaseline(sampleMs: number): Promise<{ peakMemMb: number; a
     persist: false,
     networked: true,
   });
+  const id = created.id;
   try {
     const mems: number[] = [];
     for (let i = 0; i < 10; i++) {
