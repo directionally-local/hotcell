@@ -51,32 +51,39 @@ export interface DriverBaseline {
 }
 
 /**
- * Measured footprints. Only `heavy` has any measurement today (the sandbox-dax
- * demand curve); the other two are `null` on purpose — see the issue this
- * implements. Fill them in from a measured run (see docs/benchmarks.md).
+ * Measured footprints. `light` and `medium` were measured on the container
+ * driver (see docs/benchmarks.md § Per-agent density); `heavy` still has gaps —
+ * its peak and CPU knee come from the sandbox-dax demand curve, but average CPU
+ * and disk are unmeasured, so it stays `measured: false`.
  */
 export const SIZING_PROFILES: Readonly<Record<WorkloadProfile, ProfileFootprint>> = {
   light: {
     profile: "light",
     label: "scripts / small Python repo",
-    peakMemoryMb: null,
-    avgMemoryMb: null,
-    burstCpus: null,
-    avgCpus: null,
-    diskGb: null,
-    basis: "not measured — see docs/benchmarks.md § Per-agent density for the procedure",
-    measured: false,
+    // 40-file Python repo: compileall + 200 script runs. 3 reps, peak 10–16 MiB.
+    peakMemoryMb: 16,
+    avgMemoryMb: 9,
+    burstCpus: 1.05,
+    avgCpus: 0.98,
+    diskGb: 0.001,
+    basis:
+      "measured 2026-10-29, Hetzner CAX21 (4 shared ARM cores, 8 GB), container driver: " +
+      "40-file Python repo, compileall + 200 script runs; 3 reps, peak 10–16 MiB",
+    measured: true,
   },
   medium: {
     profile: "medium",
     label: "typical TypeScript web app (~92k lines)",
-    peakMemoryMb: null,
-    avgMemoryMb: null,
-    burstCpus: null,
-    avgCpus: null,
-    diskGb: null,
-    basis: "not measured — see docs/benchmarks.md § Per-agent density for the procedure",
-    measured: false,
+    // directionally-local/autopilot: npm ci + tsc --noEmit. 3 reps, peak 974–988 MiB.
+    peakMemoryMb: 988,
+    avgMemoryMb: 818,
+    burstCpus: 2.77,
+    avgCpus: 1.87,
+    diskGb: 0.25,
+    basis:
+      "measured 2026-10-29, Hetzner CAX21 (4 shared ARM cores, 8 GB), container driver: " +
+      "directionally-local/autopilot, npm ci + tsc --noEmit; 3 reps, peak 974–988 MiB",
+    measured: true,
   },
   heavy: {
     profile: "heavy",
@@ -101,12 +108,13 @@ export const DRIVER_BASELINES: Readonly<Record<SizingDriver, DriverBaseline>> = 
   container: {
     driver: "container",
     label: "Docker container",
-    // Shared kernel: the runtime's own per-sandbox cost is a few MiB and has not
-    // been isolated from the workload. Counting 0 under-reports slightly; it is
-    // the honest choice until the benchmark separates the two.
-    memoryMb: 0,
-    basis: "shared kernel; per-sandbox runtime overhead not separately measured (counted as 0)",
-    measured: false,
+    // Idle sandbox RSS: the guest agent as PID 1, nothing else running. This is
+    // the in-cgroup cost; the runtime's own shim lives outside it.
+    memoryMb: 2,
+    basis:
+      "measured 2026-10-29, Hetzner CAX21, container driver: idle sandbox RSS 2 MiB " +
+      "(agent process only; the runtime shim is outside the cgroup)",
+    measured: true,
   },
   firecracker: {
     driver: "firecracker",

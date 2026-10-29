@@ -30,6 +30,13 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
   header .spacer { flex: 1; }
   header .cost { font-family: var(--mono); font-size: 13px; }
   header .cost b { color: var(--green); }
+  .sizing { display: flex; align-items: center; gap: 8px; padding: 8px 20px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    font-size: 12px; color: var(--muted); }
+  .sizing b { color: var(--fg); font-family: var(--mono); }
+  .sizing .warn { color: var(--yellow, #d29922); }
+  .sizing input { width: 64px; padding: 3px 6px; }
+  .sizing select { padding: 3px 6px; }
   main { padding: 20px; max-width: 1200px; margin: 0 auto; }
   .bar { display: flex; gap: 8px; margin-bottom: 14px; align-items: center; }
   input, button, select { font: inherit; }
@@ -98,6 +105,17 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
   <span class="cost" id="cap" title="host memory committed / budget"></span>
   <span class="cost">total cost: <b id="totalCost">$0.000000</b></span>
 </header>
+<div class="sizing">
+  <span>size a host:</span>
+  <select id="sizeProfile" title="workload profile">
+    <option value="light">light</option>
+    <option value="medium" selected>medium</option>
+    <option value="heavy">heavy</option>
+  </select>
+  <input id="sizeAgents" type="number" min="1" max="512" value="4" title="agents" />
+  <span>agents →</span>
+  <span id="sizeOut">…</span>
+</div>
 <main>
   <div class="bar">
     <input id="newImage" placeholder="image (optional)" size="22" />
@@ -230,8 +248,34 @@ function loadCapacity() {
   }).catch(function () {});
 }
 
+// Sizing panel: the same model the installer and the website calculator use, so
+// "this host fits ~N agents" has one answer everywhere. Unmeasured inputs show
+// as "?" with the gaps named — never as a confident number.
+function loadSizing() {
+  var profile = document.getElementById("sizeProfile").value;
+  var agents = Math.max(1, Number(document.getElementById("sizeAgents").value) || 1);
+  var el = document.getElementById("sizeOut");
+  api("/capacity/sizing", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ profile: profile, people: agents })
+  }).then(function (s) {
+    var mem = function (mb) {
+      return mb === null ? "?" : mb < 1024 ? mb + " MiB" : (mb / 1024).toFixed(1) + " GB";
+    };
+    var disk = function (gb) {
+      return gb === null ? "?" : gb < 1 ? Math.round(gb * 1024) + " MiB" : gb + " GB";
+    };
+    var cores = function (v) { return v === null ? "?" : v + " cores"; };
+    el.innerHTML = "mem <b>" + mem(s.totals.memoryMb) + "</b> · " + cores(s.totals.vcpus) +
+      " · disk " + disk(s.totals.diskGb) +
+      (s.ok ? "" : " <span class=\"warn\">not measured: " + s.missing.join(", ") + "</span>");
+  }).catch(function () { el.textContent = ""; });
+}
+
 function refresh() {
   loadCapacity();
+  loadSizing();
   api("/sandboxes").then(function (data) {
     clearErr();
     var list = data.sandboxes || [];
@@ -459,6 +503,8 @@ document.getElementById("rows").addEventListener("click", function (e) {
 });
 document.getElementById("newBtn").addEventListener("click", createSandbox);
 document.getElementById("refreshBtn").addEventListener("click", refresh);
+document.getElementById("sizeProfile").addEventListener("change", loadSizing);
+document.getElementById("sizeAgents").addEventListener("input", loadSizing);
 
 loadInfo().then(refresh).catch(showErr);
 setInterval(refresh, 3000);

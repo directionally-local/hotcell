@@ -31,19 +31,23 @@ export async function capacityCommand(
     };
     try {
       const s = await client.sizing(input);
-      const gb = (mb: number) => (mb / 1024).toFixed(1);
-      const show = (value: number | null, unit: string) =>
-        value === null ? "not measured" : `${value} ${unit}`;
+      // Small footprints are the common case; "0.0 GB" is not a useful answer.
+      const mem = (mb: number | null) =>
+        mb === null ? "not measured" : mb < 1024 ? `${mb} MiB` : `${(mb / 1024).toFixed(1)} GB`;
+      const disk = (gb: number | null) =>
+        gb === null ? "not measured" : gb < 1 ? `${Math.round(gb * 1024)} MiB` : `${gb} GB`;
+      const cores = (value: number | null) =>
+        value === null ? "not measured" : `${value} cores`;
       console.log(`Sizing:     ${s.agents} agent(s) · profile ${s.profile} · driver ${s.driver}`);
       console.log(
-        `Per agent:  peak ${s.perAgent.peakMemoryMb === null ? "not measured" : `${gb(s.perAgent.peakMemoryMb)} GB`}` +
-          ` · burst ${show(s.perAgent.burstCpus, "cores")}` +
-          ` · disk ${show(s.perAgent.diskGb, "GB")}`,
+        `Per agent:  peak ${mem(s.perAgent.peakMemoryMb)}` +
+          ` · burst ${cores(s.perAgent.burstCpus)}` +
+          ` · disk ${disk(s.perAgent.diskGb)}`,
       );
       console.log(
-        `Provision:  memory ${s.totals.memoryMb === null ? "not measured" : `${gb(s.totals.memoryMb)} GB`}` +
-          ` · vCPU ${show(s.totals.vcpus, "cores")}` +
-          ` · disk ${show(s.totals.diskGb, "GB")}`,
+        `Provision:  memory ${mem(s.totals.memoryMb)}` +
+          ` · vCPU ${cores(s.totals.vcpus)}` +
+          ` · disk ${disk(s.totals.diskGb)}`,
       );
       if (!s.ok) {
         console.log(`Incomplete: ${s.missing.join(", ")} — see docs/benchmarks.md § Per-agent density`);

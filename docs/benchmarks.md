@@ -154,29 +154,35 @@ Measuring this also surfaced and fixed three product bugs (a `writableRootfs` ga
 
 This is the number the installer's "this server fits ~N agents" line and any public "X more agents per machine" claim depend on: how much RAM, vCPU and disk one *working* agent takes. The boot-time and TTI numbers above do not answer it — an idle sandbox is not an agent.
 
-**Status: partially measured.** Only the heavy profile has numbers, and only for memory and CPU. Empty cells are empty on purpose; nothing here is estimated.
+**Measured 2026-10-29** on a Hetzner **CAX21** (4 shared ARM cores, Neoverse-N1, 8 GB RAM, 80 GB local disk, Ubuntu 24.04, Docker 29.9.2, hotcell 0.1.34, container driver), with `npm run bench:agent-density`. Three reps per profile; the range is the band across reps, not a single run.
 
 | Profile | Driver | Peak RAM / agent | Avg RAM / agent | Burst vCPU | Avg vCPU | Disk / agent |
 |---|---|---|---|---|---|---|
-| light — scripts / small Python repo | container | — | — | — | — | — |
+| light — scripts / small Python repo | container | 10–16 MiB | 8–9 MiB | 1.05 | 0.98 | 1 MiB |
 | light | firecracker | — | — | — | — | — |
 | light | Apple VZ | — | — | — | — | — |
-| medium — typical TS web app (~92k lines) | container | — | — | — | — | — |
+| medium — typical TS web app (~92k lines) | container | 974–988 MiB | 806–818 MiB | 2.77 | 1.87 | 258 MiB |
 | medium | firecracker | — | — | — | — | — |
 | medium | Apple VZ | — | — | — | — | — |
 | heavy — large monorepo, slow builds | container | 24 GiB floor | — | 16 | — | — |
 | heavy | firecracker | 24 GiB floor + 54 MiB baseline | — | 16 | — | — |
 | heavy | Apple VZ | — | — | — | — | — |
 
-The heavy row comes from the sandbox-dax demand curve above: peak working set 11.0–14.2 GiB across byte-identical reps, 16 GiB flipping between pass and OOM, ≥ 24 GiB never failing; and the CPU knee at 8–16 vCPU (30.7 s at 8, 20.2 s at 16, 17.4 s at 32).
+What each row actually ran:
+
+- **light** — a 40-file Python repo, `python3 -m compileall` plus 200 runs of a script that imports every module. ~7.5 s per rep.
+- **medium** — [`directionally-local/autopilot`](https://github.com/directionally-local/autopilot), `npm ci` then `npx tsc --noEmit`. ~15 s per rep. Setup (clone + install) is excluded from the timing but included in the disk figure.
+- **heavy** — not run here: the 24 GiB floor does not fit an 8 GB host. Its peak and CPU knee come from the sandbox-dax demand curve above (11.0–14.2 GiB band, 16 GiB flipping pass/OOM, ≥ 24 GiB never failing; 30.7 s at 8 vCPU, 20.2 s at 16, 17.4 s at 32). Average CPU and disk are unmeasured.
 
 Per-sandbox runtime baseline, measured separately from the workload:
 
 | Driver | Host RAM per live sandbox | Source |
 |---|---|---|
-| container | ~0 (shared kernel; not isolated from the workload) | not measured |
+| container | 2 MiB (idle sandbox, agent as PID 1) | measured 2026-10-29, CAX21 |
 | firecracker | ~54 MiB | `npm run bench:density`, 2026-07-17, n2-standard-4 nested-virt |
 | Apple VZ | — | not measured |
+
+Two caveats worth keeping attached to these numbers. The container baseline is the in-cgroup cost only — the runtime's own shim lives outside it. And the CPU figures are the workload's own demand on a 4-core host with the sandbox cap set above it; on a host with fewer free cores they would be lower, not higher.
 
 #### The model
 
@@ -196,17 +202,32 @@ An unmeasured input is `null`, never a plausible-looking number. `sizeHost()` th
 
 Surfaces: `POST /capacity/sizing`, `client.sizing()` in the TypeScript SDK, and `hotcell capacity --sizing`.
 
-#### How to fill the table
+#### Reproducing
 
-Needs a Linux host with Docker and KVM (Firecracker), or macOS with the Apple VZ artifacts.
+```bash
+npm run bench:agent-density -- --profile light|medium|heavy|all [--agents N] [--driver container]
+```
 
-1. Run a realistic agent task per profile — install, typecheck, tests, build — not an idle loop.
-2. Sample per-sandbox RSS and CPU at least once a second for the whole task (`GET /sandboxes/{id}/metrics`); record peak and mean.
-3. Record disk after the task: workspace + dependencies + caches.
-4. Repeat at least three times and report the band, not one rep — the sandbox-dax memory floor moved 11.0–14.2 GiB across byte-identical runs.
-5. Paste the numbers into `SIZING_PROFILES` / `DRIVER_BASELINES` and set `measured: true` only when every field in that row is filled.
+It needs a running daemon and, for the container driver, Docker. `HOTCELL_DENSITY_REPO` overrides the medium/heavy repo. Run it at least three times and report the band — the sandbox-dax memory floor moved 11.0–14.2 GiB across byte-identical runs, so a single rep is not a number.
 
-End-to-end density (the issue's step 2) is the same task repeated on one fixed host until admission control refuses the next create; record the host spec and the count.
+#### End-to-end density
+
+Same host (CAX21, 4 shared ARM cores, 8 GB), admission control enforced, each agent created with a 1024 MiB / 1 vCPU limit — its measured footprint rounded up to the next 256 MiB, not the benchmark's generous 6 GB cap. Agents were created one at a time and each started the medium task immediately, so the host carried a growing set of *working* agents rather than idle ones.
+
+| Agents running | Memory committed | Next create |
+|---|---|---|
+| 7 | 7168 / 7729 MiB | refused (503) |
+
+A 4-core / 8 GB CAX21 holds **7 medium agents** working at once. Memory is the binding constraint, not CPU: CPU committed reached 7 against a budget of 4, which admission allows because CPU is throttled rather than fatal.
+
+Note the gap between that and what the sizing model recommends: 7 agents at 1024 MiB each is 7168 MiB, which fits, but the model adds 25% headroom for the OS, page cache and the daemon and so asks for 8663 MiB — it would call this host a 6-agent machine. Both numbers are right for their purpose. Admission is a hard gate on what you requested; the model is a provisioning recommendation that leaves room for everything outside the sandboxes. Quote 7 as the measured ceiling and 6 as the number to plan with.
+
+Reproduce with `npm run bench:agent-density -- --profile medium --density`.
+
+#### Still unmeasured
+
+- **heavy** — the 24 GiB floor does not fit an 8 GB host.
+- **Firecracker and Apple VZ** — need `/dev/kvm` (bare metal or a dedicated-vCPU host) or macOS with the VZ artifacts. The CAX21 is a shared-vCPU cloud instance and has no `/dev/kvm`.
 
 ## Summary
 
