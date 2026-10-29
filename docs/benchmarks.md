@@ -210,7 +210,24 @@ npm run bench:agent-density -- --profile light|medium|heavy|all [--agents N] [--
 
 It needs a running daemon and, for the container driver, Docker. `HOTCELL_DENSITY_REPO` overrides the medium/heavy repo. Run it at least three times and report the band — the sandbox-dax memory floor moved 11.0–14.2 GiB across byte-identical runs, so a single rep is not a number.
 
-End-to-end density (the issue's step 2) is the same task repeated on one fixed host until admission control refuses the next create; record the host spec and the count.
+#### End-to-end density
+
+Same host (CAX21, 4 shared ARM cores, 8 GB), admission control enforced, each agent created with a 1024 MiB / 1 vCPU limit — its measured footprint rounded up to the next 256 MiB, not the benchmark's generous 6 GB cap. Agents were created one at a time and each started the medium task immediately, so the host carried a growing set of *working* agents rather than idle ones.
+
+| Agents running | Memory committed | Next create |
+|---|---|---|
+| 7 | 7168 / 7729 MiB | refused (503) |
+
+A 4-core / 8 GB CAX21 holds **7 medium agents** working at once. Memory is the binding constraint, not CPU: CPU committed reached 7 against a budget of 4, which admission allows because CPU is throttled rather than fatal.
+
+Note the gap between that and what the sizing model recommends: 7 agents at 1024 MiB each is 7168 MiB, which fits, but the model adds 25% headroom for the OS, page cache and the daemon and so asks for 8663 MiB — it would call this host a 6-agent machine. Both numbers are right for their purpose. Admission is a hard gate on what you requested; the model is a provisioning recommendation that leaves room for everything outside the sandboxes. Quote 7 as the measured ceiling and 6 as the number to plan with.
+
+Reproduce with `npm run bench:agent-density -- --profile medium --density`.
+
+#### Still unmeasured
+
+- **heavy** — the 24 GiB floor does not fit an 8 GB host.
+- **Firecracker and Apple VZ** — need `/dev/kvm` (bare metal or a dedicated-vCPU host) or macOS with the VZ artifacts. The CAX21 is a shared-vCPU cloud instance and has no `/dev/kvm`.
 
 ## Summary
 
