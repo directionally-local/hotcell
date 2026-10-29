@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 from urllib.parse import quote
 
+from ._routes import ROUTES as API_ROUTES, build_path as build_api_path
+
 __all__ = [
     "HotcellClient",
     "Sandbox",
@@ -48,6 +50,8 @@ __all__ = [
     "FileChangeEvent",
     "EgressPolicy",
     "get_sandbox",
+    "API_ROUTES",
+    "build_api_path",
 ]
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:4750"

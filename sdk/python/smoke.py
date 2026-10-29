@@ -130,15 +130,20 @@ def main() -> int:
         minted = sb.create_egress_token()
         assert minted.get("token"), "egress mint returned no token"
         scoped = sb.create_egress_token(
-            hotcell.EgressPolicy(spend_cap_usd=1.0, models=["gpt-4o"])
+            EgressPolicy(spend_cap_usd=1.0, models=["gpt-4o"])
         )
         assert scoped["policy"]["spendCapUsd"] == 1.0, scoped
         assert scoped["policy"]["models"] == ["gpt-4o"], scoped
         sb.revoke_egress_token(scoped["token"])
         listed = sb.list_egress_tokens()
-        assert minted["token"] in listed.get("tokens", []), "minted token not listed"
+        assert any(
+            t["token"] == minted["token"] for t in listed.get("tokens", [])
+        ), "minted token not listed"
         sb.revoke_egress_token(minted["token"])
-        assert minted["token"] not in sb.list_egress_tokens().get("tokens", [])
+        assert not any(
+            t["token"] == minted["token"]
+            for t in sb.list_egress_tokens().get("tokens", [])
+        )
         log("egress token mint/list/revoke works")
 
         # backup / restore rollback

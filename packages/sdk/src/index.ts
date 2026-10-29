@@ -1190,3 +1190,16 @@ export async function* parseSSE<T>(
     }
   }
 }
+
+// The generated route table is the machine-readable API surface. Ergonomic
+// wrappers above stay hand-written; path construction and drift checks use this.
+export {
+  ROUTES as API_ROUTES,
+  buildPath as buildApiPath,
+} from "./generated/routes.js";
+export type {
+  HttpMethod,
+  RouteId,
+  RouteSpec,
+  StreamKind,
+} from "./generated/routes.js";

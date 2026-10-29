@@ -109,3 +109,124 @@ Set these before `hotcell start` (they're inherited by the daemon) or on `hotcel
 | `HOTCELL_OTEL_ENDPOINT` / `HOTCELL_OTEL_HEADERS` | — | Legacy audit-only endpoint/header overrides |
 
 SDK/CLI endpoint: `HOTCELL_ENDPOINT` (default `http://127.0.0.1:4750`).
+
+<!-- BEGIN GENERATED API -->
+## HTTP API
+
+Generated from the daemon route table (`packages/daemon/src/api/routes.ts`).
+The full machine-readable description is [`docs/openapi.json`](./openapi.json).
+
+### system
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| GET | `/healthz` | Daemon health and active runtime driver |
+| GET | `/info` | Daemon metadata: drivers, default image, ports, providers, cost rates |
+| GET | `/capacity` | Host capacity and admission status |
+| POST | `/reload-keys` | Hot-reload provider keys after `hotcell keys add/rm` |
+| POST | `/audit-events` | Record a client-side audit event (key import choices) |
+| GET | `/traces` | Recent finished spans, newest first |
+| GET | `/` | Embedded single-page dashboard |
+| GET | `/dashboard` | Embedded single-page dashboard (alias) |
+
+### sandboxes
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| POST | `/sandboxes` | Create a sandbox |
+| GET | `/sandboxes` | List sandboxes |
+| GET | `/sandboxes/{id}` | Get a sandbox record |
+| DELETE | `/sandboxes/{id}` | Destroy a sandbox |
+| POST | `/sandboxes/{id}/stop` | Stop a sandbox (workspace volume persists) |
+| POST | `/sandboxes/{id}/pause` | Pause a sandbox |
+| POST | `/sandboxes/{id}/start` | Start a stopped sandbox |
+
+### exec
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| POST | `/sandboxes/{id}/exec` | Run a shell command, streaming output as SSE |
+| GET | `/sandboxes/{id}/terminal` | Interactive PTY over a WebSocket upgrade |
+| POST | `/sandboxes/{id}/run-code` | Run a code cell in a persistent interpreter context |
+
+### files
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| POST | `/sandboxes/{id}/files/write` | Write a file |
+| POST | `/sandboxes/{id}/files/read` | Read a file |
+| POST | `/sandboxes/{id}/files/mkdir` | Create a directory |
+| POST | `/sandboxes/{id}/files/list` | List a directory |
+| GET | `/sandboxes/{id}/watch` | Watch a path for filesystem changes (SSE) |
+
+### processes
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| POST | `/sandboxes/{id}/processes` | Start a background process |
+| GET | `/sandboxes/{id}/processes` | List background processes |
+| DELETE | `/sandboxes/{id}/processes/{procId}` | Kill a background process |
+| GET | `/sandboxes/{id}/processes/{procId}/logs` | Stream a process logfile (SSE) |
+
+### networking
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| POST | `/sandboxes/{id}/wait-port` | Wait until a TCP port is listening inside the sandbox |
+| POST | `/sandboxes/{id}/expose` | Expose a port through the preview proxy |
+| GET | `/sandboxes/{id}/expose` | List exposed ports |
+| DELETE | `/sandboxes/{id}/expose/{port:int}` | Stop exposing a port |
+
+### sessions
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| GET | `/sandboxes/{id}/env` | Get sandbox-level environment variables |
+| POST | `/sandboxes/{id}/env` | Merge sandbox-level environment variables |
+| POST | `/sandboxes/{id}/sessions` | Create an execution session (cwd + env) |
+| GET | `/sandboxes/{id}/sessions` | List sessions |
+| DELETE | `/sandboxes/{id}/sessions/{sessionId}` | Delete a session |
+| POST | `/sandboxes/{id}/sessions/{sessionId}/env` | Merge session-level environment variables |
+
+### code
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| POST | `/sandboxes/{id}/code-contexts` | Create a persistent code-interpreter context |
+| GET | `/sandboxes/{id}/code-contexts` | List code contexts |
+| DELETE | `/sandboxes/{id}/code-contexts/{contextId}` | Delete a code context |
+
+### metrics
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| GET | `/sandboxes/{id}/metrics` | Live resource metrics for a sandbox |
+| GET | `/sandboxes/{id}/metrics/history` | Sampled metrics history |
+
+### backups
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| GET | `/backups` | List all workspace backups |
+| DELETE | `/backups/{backupId}` | Delete a backup |
+| POST | `/sandboxes/{id}/backups` | Back up a sandbox workspace |
+| GET | `/sandboxes/{id}/backups` | List a sandbox's backups |
+| POST | `/sandboxes/{id}/restore` | Restore a backup into a sandbox |
+
+### templates
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| GET | `/templates` | List captured microVM templates |
+| POST | `/templates` | Capture a running sandbox as a template |
+| DELETE | `/templates/{name}` | Delete a template and its snapshot |
+
+### egress
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| POST | `/sandboxes/{id}/egress-tokens` | Mint an egress-gateway token |
+| GET | `/sandboxes/{id}/egress-tokens` | List egress-gateway tokens |
+| DELETE | `/sandboxes/{id}/egress-tokens/{token}` | Revoke an egress-gateway token |
+
+<!-- END GENERATED API -->

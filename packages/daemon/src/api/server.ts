@@ -18,6 +18,7 @@ import { DRIVER_NAMES } from "../driver/index.js";
 import { emptyUsage, SandboxStore } from "../store.js";
 import { acceptWebSocket } from "./ws.js";
 import { formatSseEvent } from "./sse.js";
+import { matchPath, matchRoute } from "./routes.js";
 import {
   BodyTooLargeError,
   errorMessage,
@@ -455,11 +456,14 @@ function resolveLimits(
   return { limits };
 }
 
-/** Collapse high-cardinality id segments so span/route names stay bounded. */
+/**
+ * Collapse high-cardinality id segments so span/route names stay bounded. Uses
+ * the route table so a span name always matches the documented path template.
+ */
 function normalizeRoute(path: string): string {
-  return path
-    .replace(/^\/sandboxes\/[^/]+/, "/sandboxes/:id")
-    .replace(/\/(processes|sessions|code-contexts|expose|backups|egress-tokens)\/[^/]+/g, "/$1/:sub");
+  const route = matchPath(path);
+  if (route) return route.path.replace(/\{([^}:]+)(?::[a-z]+)?\}/g, ":$1");
+  return path.replace(/^\/sandboxes\/[^/]+/, "/sandboxes/:id");
 }
 
 /** Audit an access rejection without recording credentials or raw path identifiers. */
@@ -486,14 +490,20 @@ function auditAccessDenied(
  * stay open (probes + first paint, so the dashboard can prompt for the key).
  * Accepts `Authorization: Bearer <key>` or `X-API-Key: <key>`.
  */
-function isAuthorized(req: IncomingMessage, config: Config, path: string): boolean {
+function isAuthorized(
+  req: IncomingMessage,
+  config: Config,
+  method: string,
+  path: string,
+): boolean {
   if (!config.apiKey) return true;
-  // Open: health probes, the dashboard shell, and /info (non-sensitive — it only
-  // reports driver/image/cost-rates and whether auth is on, so the dashboard can
-  // decide to prompt for a key before making authenticated calls).
-  if (path === "/healthz" || path === "/" || path === "/dashboard" || path === "/info") {
-    return true;
-  }
+  // Open routes are declared in the route table (`auth: false`): health probes,
+  // the dashboard shell, and /info (non-sensitive — it only reports
+  // driver/image/cost-rates and whether auth is on, so the dashboard can decide
+  // to prompt for a key before making authenticated calls). Unknown paths still
+  // require a key.
+  const route = matchRoute(method, path)?.route;
+  if (route && !route.auth) return true;
   const header = req.headers["authorization"];
   const bearer =
     typeof header === "string" && header.startsWith("Bearer ")
@@ -578,59 +588,62 @@ async function handle(
     return sendJson(res, 403, { error: "cross-site requests are not allowed" });
   }
 
-  if (!isAuthorized(req, config, path)) {
+  if (!isAuthorized(req, config, method, path)) {
     auditAccessDenied("auth.rejected", method, path, "invalid_api_key", driver, store);
     res.setHeader("WWW-Authenticate", "Bearer");
     return sendJson(res, 401, { error: "missing or invalid API key" });
   }
 
-  if (method === "GET" && path === "/healthz") {
-    try {
-      await driver.ping();
-      return sendJson(res, 200, { ok: true, driver: driver.name, version: DAEMON_VERSION });
-    } catch (err) {
-      return sendJson(res, 503, { ok: false, error: String(err) });
+  const match = matchRoute(method, path);
+  if (!match) {
+    return sendJson(res, 404, { error: `no route for ${method} ${path}` });
+  }
+  const { route, params } = match;
+
+  switch (route.id) {
+    case "healthz": {
+      try {
+        await driver.ping();
+        return sendJson(res, 200, { ok: true, driver: driver.name, version: DAEMON_VERSION });
+      } catch (err) {
+        return sendJson(res, 503, { ok: false, error: String(err) });
+      }
     }
-  }
 
-  // Daemon info for the dashboard (cost rates, proxy port, driver, image).
-  if (method === "GET" && path === "/info") {
-    return sendJson(res, 200, {
-      version: DAEMON_VERSION,
-      driver: driver.name,
-      drivers: DRIVER_NAMES,
-      defaultImage: config.defaultImage,
-      proxyPort: config.proxyPort,
-      costCpuPerHour: config.costCpuPerHour,
-      costMemGbPerHour: config.costMemGbPerHour,
-      costEgressPerGb: config.costEgressPerGb,
-      defaultSleepAfterMs: config.defaultSleepAfterMs,
-      auth: config.apiKey.length > 0,
-      otlp: config.otlpEndpoint.length > 0,
-      egressPort: config.egressPort,
-      egressProviders: Object.keys(buildProviders(config)),
-      defaultMemoryMb: config.defaultMemoryMb,
-      defaultCpus: config.defaultCpus,
-      defaultPidsLimit: config.defaultPidsLimit,
-    });
-  }
+    // Daemon info for the dashboard (cost rates, proxy port, driver, image).
+    case "info": {
+      return sendJson(res, 200, {
+        version: DAEMON_VERSION,
+        driver: driver.name,
+        drivers: DRIVER_NAMES,
+        defaultImage: config.defaultImage,
+        proxyPort: config.proxyPort,
+        costCpuPerHour: config.costCpuPerHour,
+        costMemGbPerHour: config.costMemGbPerHour,
+        costEgressPerGb: config.costEgressPerGb,
+        defaultSleepAfterMs: config.defaultSleepAfterMs,
+        auth: config.apiKey.length > 0,
+        otlp: config.otlpEndpoint.length > 0,
+        egressPort: config.egressPort,
+        egressProviders: Object.keys(buildProviders(config)),
+        defaultMemoryMb: config.defaultMemoryMb,
+        defaultCpus: config.defaultCpus,
+        defaultPidsLimit: config.defaultPidsLimit,
+      });
+    }
 
-  const egressTokenIdMatch = path.match(
-    /^\/sandboxes\/([^/]+)\/egress-tokens\/([^/]+)$/,
-  );
-  if (method === "DELETE" && egressTokenIdMatch) {
-    if (!store.get(egressTokenIdMatch[1])) return sendJson(res, 404, { error: "not found" });
-    const removed = store.removeEgressToken(egressTokenIdMatch[2]);
-    if (removed) audit({ event: "gateway.token.revoked", sandboxId: egressTokenIdMatch[1], driver: store.get(egressTokenIdMatch[1])?.driver ?? driver.name, attributes: { "token.raw": egressTokenIdMatch[2] } });
-    if (!removed) return sendJson(res, 404, { error: "token not found" });
-    return sendJson(res, 200, { token: egressTokenIdMatch[2], revoked: true });
-  }
+    case "egress-tokens.revoke": {
+      const id = params.id;
+      if (!store.get(id)) return sendJson(res, 404, { error: "not found" });
+      const removed = store.removeEgressToken(params.token);
+      if (removed) audit({ event: "gateway.token.revoked", sandboxId: id, driver: store.get(id)?.driver ?? driver.name, attributes: { "token.raw": params.token } });
+      if (!removed) return sendJson(res, 404, { error: "token not found" });
+      return sendJson(res, 200, { token: params.token, revoked: true });
+    }
 
-  const egressTokensMatch = path.match(/^\/sandboxes\/([^/]+)\/egress-tokens$/);
-  if (egressTokensMatch) {
-    const id = egressTokensMatch[1];
-    if (!store.get(id)) return sendJson(res, 404, { error: "not found" });
-    if (method === "POST") {
+    case "egress-tokens.create": {
+      const id = params.id;
+      if (!store.get(id)) return sendJson(res, 404, { error: "not found" });
       const body = await readJson(req, config.maxBodyBytes);
       const parsed = parseEgressPolicy(body);
       if ("error" in parsed) return sendJson(res, 400, { error: parsed.error });
@@ -643,7 +656,10 @@ async function handle(
         providers: egressConfig(config).providers,
       });
     }
-    if (method === "GET") {
+
+    case "egress-tokens.list": {
+      const id = params.id;
+      if (!store.get(id)) return sendJson(res, 404, { error: "not found" });
       const tokens = store.listEgressTokens(id).map((r) => ({
         token: r.token,
         policy: r.policy,
@@ -655,336 +671,278 @@ async function handle(
       }));
       return sendJson(res, 200, { tokens, providers: egressConfig(config).providers });
     }
-  }
 
-  // Host capacity + admission status (for the dashboard meter + `sb capacity`).
-  if (method === "GET" && path === "/capacity") {
-    if (!deps.capacity) return sendJson(res, 200, { enforced: false });
-    return sendJson(res, 200, {
-      ...deps.capacity.snapshot(),
-      boot: deps.bootScheduler?.snapshot(),
-    });
-  }
-
-  // Hot-reload provider keys after `hotcell keys add/rm` — no daemon restart.
-  if (method === "POST" && path === "/reload-keys") {
-    const r = deps.reloadKeys?.() ?? { providers: 0 };
-    return sendJson(res, 200, { ok: true, ...r });
-  }
-
-  if (method === "POST" && path === "/audit-events") {
-    const body = await readJson(req, config.maxBodyBytes);
-    if (body.event !== "keys.import" || !Array.isArray(body.choices) || body.choices.length > 500) {
-      return sendJson(res, 400, { error: "invalid audit event payload" });
+    // Host capacity + admission status (for the dashboard meter + `sb capacity`).
+    case "capacity": {
+      if (!deps.capacity) return sendJson(res, 200, { enforced: false });
+      return sendJson(res, 200, {
+        ...deps.capacity.snapshot(),
+        boot: deps.bootScheduler?.snapshot(),
+      });
     }
-    const choices = body.choices as unknown[];
-    if (!choices.every((choice) => {
-      if (!choice || typeof choice !== "object") return false;
-      const item = choice as Record<string, unknown>;
-      return typeof item.name === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)
-        && (item.disposition === "gateway" || item.disposition === "inject" || item.disposition === "skip");
-    })) return sendJson(res, 400, { error: "invalid key import choice" });
-    const safeChoices = choices as { name: string; disposition: "gateway" | "inject" | "skip" }[];
-    audit({ event: "keys.import", driver: driver.name, attributes: {
-      "key.count": safeChoices.length,
-      "key.names": safeChoices.map((item) => item.name).join(","),
-      "key.dispositions": safeChoices.map((item) => `${item.name}=${item.disposition}`).join(","),
-    } });
-    return sendJson(res, 202, { accepted: true });
-  }
 
-  // Recent finished spans, for debugging and the trace view. Newest first.
-  if (method === "GET" && path === "/traces") {
-    const limit = Number(url.searchParams.get("limit") ?? "100") || 100;
-    return sendJson(res, 200, { spans: recentSpans().slice(0, limit) });
-  }
+    // Hot-reload provider keys after `hotcell keys add/rm` — no daemon restart.
+    case "keys.reload": {
+      const r = deps.reloadKeys?.() ?? { providers: 0 };
+      return sendJson(res, 200, { ok: true, ...r });
+    }
 
-  // Embedded single-page dashboard (no build step, zero dependencies).
-  if (method === "GET" && (path === "/" || path === "/dashboard")) {
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    return void res.end(DASHBOARD_HTML);
-  }
-
-  if (method === "POST" && path === "/sandboxes") {
-    const body = await readJson(req, config.maxBodyBytes);
-    return createSandbox(res, {
-      config,
-      driver,
-      store,
-      capacity: deps.capacity,
-      bootScheduler: deps.bootScheduler,
-    }, body);
-  }
-
-  // --- templates (microVM snapshot fork) ------------------------------------
-  if (method === "GET" && path === "/templates") {
-    return sendJson(res, 200, { templates: store.listTemplates() });
-  }
-
-  if (method === "POST" && path === "/templates") {
-    const body = await readJson(req, config.maxBodyBytes);
-    return createTemplateRoute(res, { driver, store }, body);
-  }
-
-  const templateMatch = path.match(/^\/templates\/([^/]+)$/);
-  if (method === "DELETE" && templateMatch) {
-    return deleteTemplateRoute(res, { driver, store }, decodeURIComponent(templateMatch[1]));
-  }
-
-  if (method === "GET" && path === "/sandboxes") {
-    return sendJson(res, 200, { sandboxes: store.list() });
-  }
-
-  const execMatch = path.match(/^\/sandboxes\/([^/]+)\/exec$/);
-  if (method === "POST" && execMatch) {
-    const body = await readJson(req, config.maxBodyBytes);
-    return execInSandbox(res, deps, execMatch[1], body);
-  }
-
-  const fileActionMatch = path.match(/^\/sandboxes\/([^/]+)\/files\/(write|read|mkdir|list)$/);
-  if (method === "POST" && fileActionMatch) {
-    const body = await readJson(req, config.maxBodyBytes);
-    return handleFileAction(
-      res,
-      deps,
-      fileActionMatch[1],
-      fileActionMatch[2] as "write" | "read" | "mkdir" | "list",
-      body,
-    );
-  }
-
-  const watchMatch = path.match(/^\/sandboxes\/([^/]+)\/watch$/);
-  if (method === "GET" && watchMatch) {
-    const watchPath = url.searchParams.get("path") ?? "/workspace";
-    const intervalMs = Number(url.searchParams.get("interval") ?? "") || undefined;
-    return watchFiles(req, res, deps, watchMatch[1], watchPath, intervalMs);
-  }
-
-  const procLogsMatch = path.match(
-    /^\/sandboxes\/([^/]+)\/processes\/([^/]+)\/logs$/,
-  );
-  if (method === "GET" && procLogsMatch) {
-    return streamLogs(
-      req,
-      res,
-      { driver, store },
-      procLogsMatch[1],
-      procLogsMatch[2],
-      url.searchParams.get("follow") !== "0" &&
-        url.searchParams.has("follow"),
-    );
-  }
-
-  const procIdMatch = path.match(/^\/sandboxes\/([^/]+)\/processes\/([^/]+)$/);
-  if (method === "DELETE" && procIdMatch) {
-    const body = await readJson(req, config.maxBodyBytes);
-    return killProcess(res, { driver, store }, procIdMatch[1], procIdMatch[2], body);
-  }
-
-  const procMatch = path.match(/^\/sandboxes\/([^/]+)\/processes$/);
-  if (procMatch) {
-    if (method === "POST") {
+    case "audit.events": {
       const body = await readJson(req, config.maxBodyBytes);
-      return startProcess(res, deps, procMatch[1], body);
+      if (body.event !== "keys.import" || !Array.isArray(body.choices) || body.choices.length > 500) {
+        return sendJson(res, 400, { error: "invalid audit event payload" });
+      }
+      const choices = body.choices as unknown[];
+      if (!choices.every((choice) => {
+        if (!choice || typeof choice !== "object") return false;
+        const item = choice as Record<string, unknown>;
+        return typeof item.name === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)
+          && (item.disposition === "gateway" || item.disposition === "inject" || item.disposition === "skip");
+      })) return sendJson(res, 400, { error: "invalid key import choice" });
+      const safeChoices = choices as { name: string; disposition: "gateway" | "inject" | "skip" }[];
+      audit({ event: "keys.import", driver: driver.name, attributes: {
+        "key.count": safeChoices.length,
+        "key.names": safeChoices.map((item) => item.name).join(","),
+        "key.dispositions": safeChoices.map((item) => `${item.name}=${item.disposition}`).join(","),
+      } });
+      return sendJson(res, 202, { accepted: true });
     }
-    if (method === "GET") {
-      return listProcesses(res, { driver, store }, procMatch[1]);
+
+    // Recent finished spans, for debugging and the trace view. Newest first.
+    case "traces": {
+      const limit = Number(url.searchParams.get("limit") ?? "100") || 100;
+      return sendJson(res, 200, { spans: recentSpans().slice(0, limit) });
     }
-  }
 
-  const waitPortMatch = path.match(/^\/sandboxes\/([^/]+)\/wait-port$/);
-  if (method === "POST" && waitPortMatch) {
-    const body = await readJson(req, config.maxBodyBytes);
-    return waitForPort(res, deps, waitPortMatch[1], body);
-  }
+    // Embedded single-page dashboard (no build step, zero dependencies).
+    case "dashboard":
+    case "dashboard.alias": {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return void res.end(DASHBOARD_HTML);
+    }
 
-  const exposePortMatch = path.match(/^\/sandboxes\/([^/]+)\/expose\/(\d+)$/);
-  if (method === "DELETE" && exposePortMatch) {
-    return unexposePort(
-      res,
-      { store },
-      exposePortMatch[1],
-      Number(exposePortMatch[2]),
-    );
-  }
-
-  const exposeMatch = path.match(/^\/sandboxes\/([^/]+)\/expose$/);
-  if (exposeMatch) {
-    if (method === "POST") {
+    case "sandboxes.create": {
       const body = await readJson(req, config.maxBodyBytes);
-      return exposePort(res, deps, exposeMatch[1], body);
+      return createSandbox(res, {
+        config,
+        driver,
+        store,
+        capacity: deps.capacity,
+        bootScheduler: deps.bootScheduler,
+      }, body);
     }
-    if (method === "GET") {
-      const record = store.get(exposeMatch[1]);
+
+    // --- templates (microVM snapshot fork) ----------------------------------
+    case "templates.list":
+      return sendJson(res, 200, { templates: store.listTemplates() });
+
+    case "templates.create": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return createTemplateRoute(res, { driver, store }, body);
+    }
+
+    case "templates.delete":
+      return deleteTemplateRoute(res, { driver, store }, decodeURIComponent(params.name));
+
+    case "sandboxes.list":
+      return sendJson(res, 200, { sandboxes: store.list() });
+
+    case "sandboxes.exec": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return execInSandbox(res, deps, params.id, body);
+    }
+
+    case "sandboxes.files.write":
+    case "sandboxes.files.read":
+    case "sandboxes.files.mkdir":
+    case "sandboxes.files.list": {
+      const body = await readJson(req, config.maxBodyBytes);
+      const action = route.id.slice("sandboxes.files.".length) as "write" | "read" | "mkdir" | "list";
+      return handleFileAction(res, deps, params.id, action, body);
+    }
+
+    case "sandboxes.watch": {
+      const watchPath = url.searchParams.get("path") ?? "/workspace";
+      const intervalMs = Number(url.searchParams.get("interval") ?? "") || undefined;
+      return watchFiles(req, res, deps, params.id, watchPath, intervalMs);
+    }
+
+    case "sandboxes.processes.logs":
+      return streamLogs(
+        req,
+        res,
+        { driver, store },
+        params.id,
+        params.procId,
+        url.searchParams.get("follow") !== "0" &&
+          url.searchParams.has("follow"),
+      );
+
+    case "sandboxes.processes.kill": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return killProcess(res, { driver, store }, params.id, params.procId, body);
+    }
+
+    case "sandboxes.processes.start": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return startProcess(res, deps, params.id, body);
+    }
+
+    case "sandboxes.processes.list":
+      return listProcesses(res, { driver, store }, params.id);
+
+    case "sandboxes.wait-port": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return waitForPort(res, deps, params.id, body);
+    }
+
+    case "sandboxes.expose.remove":
+      return unexposePort(res, { store }, params.id, Number(params.port));
+
+    case "sandboxes.expose.create": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return exposePort(res, deps, params.id, body);
+    }
+
+    case "sandboxes.expose.list": {
+      const record = store.get(params.id);
       if (!record) return sendJson(res, 404, { error: "not found" });
-      return sendJson(res, 200, { exposed: store.listExposed(exposeMatch[1]) });
+      return sendJson(res, 200, { exposed: store.listExposed(params.id) });
     }
-  }
 
-  const sessionEnvMatch = path.match(
-    /^\/sandboxes\/([^/]+)\/sessions\/([^/]+)\/env$/,
-  );
-  if (method === "POST" && sessionEnvMatch) {
-    const body = await readJson(req, config.maxBodyBytes);
-    return setSessionEnv(
-      res,
-      { store },
-      sessionEnvMatch[1],
-      sessionEnvMatch[2],
-      body,
-    );
-  }
-
-  const sessionIdMatch = path.match(/^\/sandboxes\/([^/]+)\/sessions\/([^/]+)$/);
-  if (method === "DELETE" && sessionIdMatch) {
-    return deleteSession(res, { store }, sessionIdMatch[1], sessionIdMatch[2]);
-  }
-
-  const sessionsMatch = path.match(/^\/sandboxes\/([^/]+)\/sessions$/);
-  if (sessionsMatch) {
-    if (method === "POST") {
+    case "sandboxes.sessions.env": {
       const body = await readJson(req, config.maxBodyBytes);
-      return createSession(res, { store }, sessionsMatch[1], body);
+      return setSessionEnv(res, { store }, params.id, params.sessionId, body);
     }
-    if (method === "GET") {
-      if (!store.get(sessionsMatch[1])) {
+
+    case "sandboxes.sessions.delete":
+      return deleteSession(res, { store }, params.id, params.sessionId);
+
+    case "sandboxes.sessions.create": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return createSession(res, { store }, params.id, body);
+    }
+
+    case "sandboxes.sessions.list": {
+      if (!store.get(params.id)) {
         return sendJson(res, 404, { error: "not found" });
       }
       return sendJson(res, 200, {
-        sessions: store.listSessions(sessionsMatch[1]),
+        sessions: store.listSessions(params.id),
       });
     }
-  }
 
-  const envMatch = path.match(/^\/sandboxes\/([^/]+)\/env$/);
-  if (envMatch) {
-    const record = store.get(envMatch[1]);
-    if (!record) return sendJson(res, 404, { error: "not found" });
-    if (method === "GET") {
+    case "sandboxes.env.get": {
+      const record = store.get(params.id);
+      if (!record) return sendJson(res, 404, { error: "not found" });
       return sendJson(res, 200, { env: record.env });
     }
-    if (method === "POST") {
+
+    case "sandboxes.env.set": {
+      const record = store.get(params.id);
+      if (!record) return sendJson(res, 404, { error: "not found" });
       const body = await readJson(req, config.maxBodyBytes);
       const env = (body.env as Record<string, string>) ?? {};
       record.env = { ...record.env, ...env };
       store.add(record); // write-through the env change
       return sendJson(res, 200, { env: record.env });
     }
-  }
 
-  if (method === "GET" && path === "/backups") {
-    return sendJson(res, 200, { backups: await backups.list() });
-  }
+    case "backups.list":
+      return sendJson(res, 200, { backups: await backups.list() });
 
-  const backupIdMatch = path.match(/^\/backups\/([^/]+)$/);
-  if (method === "DELETE" && backupIdMatch) {
-    const backupInfo = await backups.get(backupIdMatch[1]);
-    const removed = await backups.remove(backupIdMatch[1]);
-    if (!removed) return sendJson(res, 404, { error: "backup not found" });
-    audit({
-      event: "sandbox.backup.delete",
-      sandboxId: backupInfo?.sandboxId,
-      driver: backupInfo ? store.get(backupInfo.sandboxId)?.driver ?? driver.name : driver.name,
-      attributes: { backupId: backupIdMatch[1] },
-    });
-    return sendJson(res, 200, { backupId: backupIdMatch[1], deleted: true });
-  }
-
-  const backupsMatch = path.match(/^\/sandboxes\/([^/]+)\/backups$/);
-  if (backupsMatch) {
-    if (method === "POST") {
-      return createBackup(res, deps, backupsMatch[1]);
+    case "backups.delete": {
+      const backupInfo = await backups.get(params.backupId);
+      const removed = await backups.remove(params.backupId);
+      if (!removed) return sendJson(res, 404, { error: "backup not found" });
+      audit({
+        event: "sandbox.backup.delete",
+        sandboxId: backupInfo?.sandboxId,
+        driver: backupInfo ? store.get(backupInfo.sandboxId)?.driver ?? driver.name : driver.name,
+        attributes: { backupId: params.backupId },
+      });
+      return sendJson(res, 200, { backupId: params.backupId, deleted: true });
     }
-    if (method === "GET") {
-      if (!store.get(backupsMatch[1])) {
+
+    case "sandboxes.backups.create":
+      return createBackup(res, deps, params.id);
+
+    case "sandboxes.backups.list": {
+      if (!store.get(params.id)) {
         return sendJson(res, 404, { error: "not found" });
       }
       const all = await backups.list();
       return sendJson(res, 200, {
-        backups: all.filter((b) => b.sandboxId === backupsMatch[1]),
+        backups: all.filter((b) => b.sandboxId === params.id),
       });
     }
-  }
 
-  const restoreMatch = path.match(/^\/sandboxes\/([^/]+)\/restore$/);
-  if (method === "POST" && restoreMatch) {
-    const body = await readJson(req, config.maxBodyBytes);
-    return restoreBackup(res, deps, restoreMatch[1], body);
-  }
-
-  const ctxIdMatch = path.match(/^\/sandboxes\/([^/]+)\/code-contexts\/([^/]+)$/);
-  if (method === "DELETE" && ctxIdMatch) {
-    return deleteCodeContext(res, { driver, store }, ctxIdMatch[1], ctxIdMatch[2]);
-  }
-
-  const ctxMatch = path.match(/^\/sandboxes\/([^/]+)\/code-contexts$/);
-  if (ctxMatch) {
-    if (method === "POST") {
+    case "sandboxes.restore": {
       const body = await readJson(req, config.maxBodyBytes);
-      return createCodeContext(res, deps, ctxMatch[1], body);
+      return restoreBackup(res, deps, params.id, body);
     }
-    if (method === "GET") {
-      if (!store.get(ctxMatch[1])) return sendJson(res, 404, { error: "not found" });
+
+    case "sandboxes.code-contexts.delete":
+      return deleteCodeContext(res, { driver, store }, params.id, params.contextId);
+
+    case "sandboxes.code-contexts.create": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return createCodeContext(res, deps, params.id, body);
+    }
+
+    case "sandboxes.code-contexts.list": {
+      if (!store.get(params.id)) return sendJson(res, 404, { error: "not found" });
       return sendJson(res, 200, {
-        contexts: store.listContexts(ctxMatch[1]).map(publicContext),
+        contexts: store.listContexts(params.id).map(publicContext),
       });
     }
-  }
 
-  const runCodeMatch = path.match(/^\/sandboxes\/([^/]+)\/run-code$/);
-  if (method === "POST" && runCodeMatch) {
-    const body = await readJson(req, config.maxBodyBytes);
-    return runCode(res, deps, runCodeMatch[1], body);
-  }
+    case "sandboxes.run-code": {
+      const body = await readJson(req, config.maxBodyBytes);
+      return runCode(res, deps, params.id, body);
+    }
 
-  const historyMatch = path.match(/^\/sandboxes\/([^/]+)\/metrics\/history$/);
-  if (method === "GET" && historyMatch) {
-    if (!store.get(historyMatch[1])) return sendJson(res, 404, { error: "not found" });
-    return sendJson(res, 200, { samples: deps.history?.get(historyMatch[1]) ?? [] });
-  }
+    case "sandboxes.metrics.history": {
+      if (!store.get(params.id)) return sendJson(res, 404, { error: "not found" });
+      return sendJson(res, 200, { samples: deps.history?.get(params.id) ?? [] });
+    }
 
-  const metricsMatch = path.match(/^\/sandboxes\/([^/]+)\/metrics$/);
-  if (method === "GET" && metricsMatch) {
-    const live = url.searchParams.get("live") !== "0";
-    return getMetrics(res, { config, driver, store }, metricsMatch[1], live);
-  }
+    case "sandboxes.metrics": {
+      const live = url.searchParams.get("live") !== "0";
+      return getMetrics(res, { config, driver, store }, params.id, live);
+    }
 
-  const stopMatch = path.match(/^\/sandboxes\/([^/]+)\/stop$/);
-  if (method === "POST" && stopMatch) {
-    return stopSandbox(res, { driver, store }, stopMatch[1]);
-  }
+    case "sandboxes.stop":
+      return stopSandbox(res, { driver, store }, params.id);
 
-  const pauseMatch = path.match(/^\/sandboxes\/([^/]+)\/pause$/);
-  if (method === "POST" && pauseMatch) {
-    return pauseSandboxRoute(res, { driver, store }, pauseMatch[1]);
-  }
+    case "sandboxes.pause":
+      return pauseSandboxRoute(res, { driver, store }, params.id);
 
-  const startMatch = path.match(/^\/sandboxes\/([^/]+)\/start$/);
-  if (method === "POST" && startMatch) {
-    return startSandbox(res, deps, startMatch[1]);
-  }
+    case "sandboxes.start":
+      return startSandbox(res, deps, params.id);
 
-  const idMatch = path.match(/^\/sandboxes\/([^/]+)$/);
-  if (idMatch) {
-    const id = idMatch[1];
-    if (method === "GET") {
-      const record = store.get(id);
+    case "sandboxes.get": {
+      const record = store.get(params.id);
       if (!record) return sendJson(res, 404, { error: "not found" });
       return sendJson(res, 200, record);
     }
-    if (method === "DELETE") {
-      const record = store.get(id);
-      if (!record) return sendJson(res, 404, { error: "not found" });
-      await driver.destroy(id);
-      audit({ event: "sandbox.destroy", sandboxId: id, driver: record.driver ?? driver.name, attributes: { image: record.image } });
-      store.remove(id);
-      store.clearSandbox(id);
-      deps.history?.clear(id);
-      return sendJson(res, 200, { id, destroyed: true });
-    }
-  }
 
-  sendJson(res, 404, { error: `no route for ${method} ${path}` });
+    case "sandboxes.destroy": {
+      const record = store.get(params.id);
+      if (!record) return sendJson(res, 404, { error: "not found" });
+      await driver.destroy(params.id);
+      audit({ event: "sandbox.destroy", sandboxId: params.id, driver: record.driver ?? driver.name, attributes: { image: record.image } });
+      store.remove(params.id);
+      store.clearSandbox(params.id);
+      deps.history?.clear(params.id);
+      return sendJson(res, 200, { id: params.id, destroyed: true });
+    }
+
+    // The terminal is a WebSocket upgrade, handled before this dispatcher.
+    case "sandboxes.terminal":
+    default:
+      return sendJson(res, 404, { error: `no route for ${method} ${path}` });
+  }
 }
 
 /** Template names double as on-disk directory names, so keep them boring. */

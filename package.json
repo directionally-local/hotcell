@@ -18,6 +18,8 @@
     "check:egress": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/egress-check.js",
     "check:audit": "npm run build --workspace @hotcell/daemon && node packages/daemon/dist/audit-check.js",
     "check:versions": "node scripts/check-release-versions.mjs",
+    "generate:api": "npm run build --workspace @hotcell/daemon && node scripts/generate-api.mjs",
+    "check:api": "npm run build --workspace @hotcell/daemon && node scripts/generate-api.mjs --check",
     "check:prompts": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/prompts-check.js",
     "check:startup": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/startup-check.js",
     "check:env": "npm run build --workspace @hotcell/sdk && npm run build --workspace @hotcell/daemon && npm run build --workspace hotcell && node packages/cli/dist/env-check.js",
