@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.36](https://github.com/directionally-local/hotcell/compare/v0.1.35...v0.1.36) (2026-10-29)
+
+
+### Features
+
+* **capacity:** shared per-agent density sizing model ([#59](https://github.com/directionally-local/hotcell/issues/59)) ([d676e15](https://github.com/directionally-local/hotcell/commit/d676e157d963269aa032d8ecab56d67466771d17)), closes [#17](https://github.com/directionally-local/hotcell/issues/17)
+
 ## [0.1.35](https://github.com/directionally-local/hotcell/compare/v0.1.34...v0.1.35) (2026-10-29)
 
 

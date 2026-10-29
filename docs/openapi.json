@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "hotcell API",
-    "version": "0.1.35",
+    "version": "0.1.36",
     "description": "Self-hostable sandbox infrastructure for coding agents. Generated from the daemon route table; do not edit by hand."
   },
   "servers": [
