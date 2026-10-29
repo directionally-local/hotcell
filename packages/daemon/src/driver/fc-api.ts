@@ -169,6 +169,41 @@ export function buildSnapshotLoadCall(vmstatePath: string, memPath: string): FcA
 }
 
 /**
+ * Rewrite the absolute host paths embedded in a Firecracker vmstate file.
+ *
+ * A snapshot pins every path it was taken with — the rootfs/workspace drives and
+ * the vsock UDS — and `/snapshot/load` has no path-override parameter. To restore
+ * one template into many VMMs, each clone therefore gets its own copy of the
+ * vmstate with the template's directory swapped for the clone's. The vmstate is
+ * plain JSON, so this walks every string value and rewrites the ones under
+ * `fromDir`; anything else (the shared read-only kernel/rootfs, if the template
+ * used one) is left untouched and stays shared.
+ *
+ * Pure and total: throws only on malformed JSON, so a corrupt template fails
+ * loudly at fork time instead of producing a VM that boots the wrong disk.
+ */
+export function rewriteSnapshotPaths(vmstate: string, fromDir: string, toDir: string): string {
+  const parsed: unknown = JSON.parse(vmstate);
+  const from = fromDir.replace(/\/+$/, "");
+  const to = toDir.replace(/\/+$/, "");
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      if (value === from) return to;
+      if (value.startsWith(`${from}/`)) return to + value.slice(from.length);
+      return value;
+    }
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = walk(v);
+      return out;
+    }
+    return value;
+  };
+  return JSON.stringify(walk(parsed));
+}
+
+/**
  * Parse Firecracker's vsock host→guest handshake reply. After the host connects
  * to the vsock UDS and writes `CONNECT <port>\n`, Firecracker replies with a line
  * `OK <hostPort>\n` on success, or `OK`-less text on failure. Returns the rest of

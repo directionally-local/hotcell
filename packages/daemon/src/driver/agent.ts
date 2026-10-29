@@ -305,6 +305,20 @@ export class AgentConn {
     await this.request({ method: "setEnv", env }).done;
   }
 
+  /**
+   * Give a snapshot-restored clone a fresh identity: reseed the kernel CRNG,
+   * set the hostname and machine-id, and fix the clock to the host's wall time.
+   * Every field is optional; an empty call still reseeds entropy.
+   */
+  async reseed(opts: {
+    hostname?: string;
+    machineId?: string;
+    unixTime?: number;
+    entropyBytes?: number;
+  }): Promise<void> {
+    await this.request({ method: "reseed", ...opts }).done;
+  }
+
   /** Start the in-guest loopback→vsock egress relay (idempotent per port): the
    *  agent listens on 127.0.0.1:`port` and forwards each connection over vsock
    *  to the host, which relays it to the egress gateway. */

@@ -11,6 +11,7 @@ import type {
   SandboxRecord,
   SandboxUsage,
   SessionInfo,
+  TemplateRecord,
 } from "./types.js";
 import { restrictMode } from "./util.js";
 
@@ -92,6 +93,8 @@ export class SandboxStore {
   private contexts = new Map<string, Map<string, CodeContextInfo>>();
   // egress token -> record (sandboxId + policy + spend; O(1) lookup for the egress proxy)
   private egressTokens = new Map<string, EgressTokenRecord>();
+  // template name -> record (microVM snapshot templates)
+  private templates = new Map<string, TemplateRecord>();
 
   /** sandboxId → open exec streams. Memory-only: streams die with the process. */
   private liveExecs = new Map<string, number>();
@@ -175,6 +178,15 @@ export class SandboxStore {
         policy    TEXT NOT NULL DEFAULT '{}',
         spendUsd  REAL NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS templates (
+        name            TEXT PRIMARY KEY,
+        driver          TEXT NOT NULL,
+        image           TEXT NOT NULL,
+        limits          TEXT NOT NULL DEFAULT '{}',
+        sourceSandboxId TEXT NOT NULL DEFAULT '',
+        createdAt       TEXT NOT NULL,
+        sizeBytes       INTEGER NOT NULL DEFAULT 0
+      );
     `);
     // Backfill columns added after the first release on databases created by an
     // older daemon (CREATE TABLE IF NOT EXISTS leaves existing tables untouched).
@@ -222,6 +234,9 @@ export class SandboxStore {
     }
     for (const row of this.db.prepare("SELECT * FROM egress_tokens").all() as any[]) {
       this.egressTokens.set(row.token, rowToEgressToken(row));
+    }
+    for (const row of this.db.prepare("SELECT * FROM templates").all() as any[]) {
+      this.templates.set(row.name, rowToTemplate(row));
     }
   }
 
@@ -626,6 +641,44 @@ export class SandboxStore {
     this.db.prepare("DELETE FROM code_contexts WHERE sandboxId = ?").run(sandboxId);
     this.db.prepare("DELETE FROM exposed_ports WHERE sandboxId = ?").run(sandboxId);
   }
+
+  // --- templates -----------------------------------------------------------
+
+  /** Insert or replace a template record (write-through). */
+  addTemplate(record: TemplateRecord): void {
+    this.templates.set(record.name, record);
+    this.db
+      .prepare(
+        `INSERT INTO templates (name, driver, image, limits, sourceSandboxId, createdAt, sizeBytes)
+         VALUES ($name, $driver, $image, $limits, $sourceSandboxId, $createdAt, $sizeBytes)
+         ON CONFLICT(name) DO UPDATE SET
+           driver=$driver, image=$image, limits=$limits,
+           sourceSandboxId=$sourceSandboxId, createdAt=$createdAt, sizeBytes=$sizeBytes`,
+      )
+      .run({
+        name: record.name,
+        driver: record.driver,
+        image: record.image,
+        limits: JSON.stringify(record.limits ?? {}),
+        sourceSandboxId: record.sourceSandboxId ?? "",
+        createdAt: record.createdAt,
+        sizeBytes: record.sizeBytes,
+      });
+  }
+
+  getTemplate(name: string): TemplateRecord | undefined {
+    return this.templates.get(name);
+  }
+
+  /** All templates, newest first. */
+  listTemplates(): TemplateRecord[] {
+    return [...this.templates.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  removeTemplate(name: string): boolean {
+    this.db.prepare("DELETE FROM templates WHERE name = ?").run(name);
+    return this.templates.delete(name);
+  }
 }
 
 /** Get-or-create the inner per-sandbox map for a two-level cache. */
@@ -636,6 +689,18 @@ function mapIn<V>(outer: Map<string, Map<any, V>>, key: string): Map<any, V> {
     outer.set(key, inner);
   }
   return inner;
+}
+
+function rowToTemplate(row: any): TemplateRecord {
+  return {
+    name: row.name,
+    driver: row.driver,
+    image: row.image,
+    limits: parseJsonObject(row.limits),
+    sourceSandboxId: row.sourceSandboxId || undefined,
+    createdAt: row.createdAt,
+    sizeBytes: row.sizeBytes ?? 0,
+  };
 }
 
 function rowToSandbox(row: any): SandboxRecord {

@@ -93,6 +93,17 @@ async function main(): Promise<void> {
     assert.ok(await conn.stats(), "stats RPC returns");
     ok("stats RPC");
 
+    // reseed (the fork path's fresh-identity op) round-trips. Only entropy is
+    // requested here — hostname/machine-id/clock would mutate the machine this
+    // check runs on. Off-Linux the handler reports the platform limitation.
+    if (process.platform === "linux") {
+      await conn.reseed({ entropyBytes: 32 });
+      ok("reseed RPC reseeds the CRNG");
+    } else {
+      await assert.rejects(() => conn.reseed({ entropyBytes: 32 }), /only supported in a Linux guest/);
+      ok("reseed RPC reaches the handler (reports the non-Linux limitation)");
+    }
+
     // Egress relay: the agent listens on guest-loopback and forwards each
     // connection out its dialer (vsock in production; HOTCELL_EGRESS_DIAL here).
     // The check hosts the "gateway": an HTTP server on the dialed unix socket.

@@ -37,6 +37,13 @@ hotcell tui   (alias: top)                   # full-screen fleet monitor: arrow-
                                              # live cpu/mem/cost, ⏎ attach, p/r/d, c create
 hotcell pause <id> | resume <id>             # fast pause / resume (memory snapshot on microVMs)
 
+# templates: capture a microVM snapshot, then fork it into fresh sandboxes
+hotcell template create <name> --from <id>   # capture a running microVM sandbox (it keeps running)
+hotcell template ls [--json] | rm <name>
+hotcell create --template <name>             # restore in ms — no kernel boot, no setup
+                                             # (image + resource shape come from the template;
+                                             #  --repo/--setup/--branch/--autopilot are rejected)
+
 # files, processes, ports, sessions, env
 hotcell files <write|read|mkdir|list> …
 hotcell watch <id> [path]                    # stream file changes

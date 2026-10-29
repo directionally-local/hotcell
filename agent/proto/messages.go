@@ -50,6 +50,14 @@ type Request struct {
 	// pty resize
 	Cols int `json:"cols,omitempty"`
 	Rows int `json:"rows,omitempty"`
+
+	// reseed: give a snapshot-restored clone a fresh identity. Every field is
+	// optional; an empty request still reseeds the kernel CRNG (the one thing a
+	// fork MUST do — clones otherwise share the template's entropy state).
+	Hostname     string `json:"hostname,omitempty"`
+	MachineID    string `json:"machineId,omitempty"`
+	UnixTime     int64  `json:"unixTime,omitempty"`     // host wall clock, seconds; 0 = leave the guest clock alone
+	EntropyBytes int    `json:"entropyBytes,omitempty"` // extra CRNG entropy to mix in (default 256)
 }
 
 // Result is the terminal Result-frame body for a request.

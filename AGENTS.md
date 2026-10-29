@@ -42,6 +42,7 @@ npm run check:container-agent       # container-driver Unix path with fake Docke
 npm run check:container-agent-tcp   # authenticated TCP path with fake Docker
 npm run check:warmpool              # container pool contract; no Docker/KVM required
 npm run check:warmpool:vz           # Apple VZ pool check; requires macOS VZ artifacts
+npm run check:fc-fork               # microVM snapshot-fork contract; no KVM required
 npm run check:netreconcile          # Docker egress-network reconciliation checks
 npm run smoke                       # full daemon/API smoke; requires a Docker-compatible engine
 npm run smoke:py                    # Python SDK end-to-end smoke; requires Docker

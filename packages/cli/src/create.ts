@@ -43,6 +43,24 @@ export async function createCommand(
   const setup = setupSteps.length ? setupSteps : undefined;
   const repo = typeof flags.repo === "string" ? flags.repo : undefined;
   const repoRef = typeof flags.ref === "string" ? flags.ref : undefined;
+  // --template: restore a captured snapshot instead of booting. The workspace,
+  // tooling and networking are already baked in, so provisioning flags conflict.
+  const template = typeof flags.template === "string" ? flags.template : undefined;
+  if (template) {
+    const conflicting = [
+      repo ? "--repo" : null,
+      setup ? "--setup" : null,
+      flags.branch ? "--branch" : null,
+      flags.autopilot ? "--autopilot" : null,
+      flags.opencode ? "--opencode" : null,
+    ].filter(Boolean);
+    if (conflicting.length) {
+      console.error(
+        `--template already has its workspace and tooling baked in; drop ${conflicting.join(", ")}`,
+      );
+      return 1;
+    }
+  }
   // --branch feat/x  → that name;  bare --branch  → an auto-generated name.
   const branch =
     typeof flags.branch === "string" ? flags.branch : flags.branch === true ? "auto" : undefined;
@@ -100,6 +118,7 @@ export async function createCommand(
     repo,
     repoRef,
     branch,
+    template,
     memoryMb,
     cpus,
     pidsLimit,

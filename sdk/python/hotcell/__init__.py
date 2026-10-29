@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional
+from urllib.parse import quote
 
 __all__ = [
     "HotcellClient",
@@ -374,6 +375,7 @@ class HotcellClient:
         memory_mb: Optional[float] = None,
         cpus: Optional[float] = None,
         pids_limit: Optional[int] = None,
+        template: Optional[str] = None,
         detach: Optional[bool] = None,
         on_status: Optional[Callable[[str, SandboxInfo], None]] = None,
     ) -> "Sandbox":
@@ -415,6 +417,8 @@ class HotcellClient:
             body["cpus"] = cpus
         if pids_limit is not None:
             body["pidsLimit"] = pids_limit
+        if template is not None:
+            body["template"] = template
         if detach is not None:
             body["detach"] = detach
         parsed = SandboxInfo.from_dict(self.request("POST", "/sandboxes", body))
@@ -471,6 +475,23 @@ class HotcellClient:
     def list(self) -> List[SandboxInfo]:
         data = self.request("GET", "/sandboxes")
         return [SandboxInfo.from_dict(s) for s in data.get("sandboxes", [])]
+
+    def create_template(self, name: str, from_sandbox: str) -> Dict[str, Any]:
+        """Capture a running sandbox as a reusable snapshot template.
+
+        The daemon pauses the guest, writes a full snapshot, and resumes the
+        source, so the sandbox keeps running. Only microVM drivers
+        (Firecracker) support this.
+        """
+        return self.request("POST", "/templates", {"name": name, "from": from_sandbox})
+
+    def list_templates(self) -> List[Dict[str, Any]]:
+        """List captured templates, newest first."""
+        return self.request("GET", "/templates").get("templates", [])
+
+    def delete_template(self, name: str) -> None:
+        """Delete a template and its on-disk snapshot."""
+        self.request("DELETE", f"/templates/{quote(name, safe='')}")
 
     def health(self) -> Dict[str, Any]:
         return self.request("GET", "/healthz")

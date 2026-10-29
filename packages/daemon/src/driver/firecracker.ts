@@ -1,17 +1,22 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer as createNetServer, connect as netConnect } from "node:net";
 import {
   closeSync,
   createWriteStream,
   existsSync,
   ftruncateSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readlinkSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { totalmem, cpus as osCpus } from "node:os";
 import { readFileSync } from "node:fs";
@@ -31,9 +36,17 @@ import {
   fcTapSetupCommands,
   fcTapTeardownCommands,
   fcVsockConnect,
+  rewriteSnapshotPaths,
 } from "./fc-api.js";
 import { VzImageCache } from "./vz-image.js";
-import type { CreateOptions, HostInfo, ResourceLimits } from "./types.js";
+import type {
+  CreateOptions,
+  CreateTemplateOptions,
+  ForkOptions,
+  HostInfo,
+  ResourceLimits,
+  TemplateInfo,
+} from "./types.js";
 import { redactSecrets } from "../audit.js";
 import { log } from "../logger.js";
 
@@ -89,6 +102,67 @@ interface FcVm {
 }
 
 const AGENT_VSOCK_PORT = 1024; // the in-guest agent listens here (matches VZ)
+
+/**
+ * What a template directory holds. The daemon's SQLite row is the index; this
+ * file is what the driver needs to restore a clone without the daemon.
+ */
+export interface FcTemplateMeta {
+  name: string;
+  image: string;
+  limits: ResourceLimits;
+  createdAt: string;
+  sourceSandboxId?: string;
+  /** Disk files copied into the template dir (relative names). */
+  disks: string[];
+  /** Absolute state dir the snapshot was taken in — rewritten per clone. */
+  sourceDir: string;
+}
+
+/** Disks a template may carry. `workspace.img` is always present; a private
+ *  writable rootfs is only there when the source sandbox had one. */
+const TEMPLATE_DISKS = ["workspace.img", "rootfs.img"] as const;
+
+/** Read a template's `meta.json`. Throws a caller-actionable error when the
+ *  directory or file is missing (a stale daemon row, or a hand-deleted dir). */
+export function readTemplateMeta(templateDir: string): FcTemplateMeta {
+  const path = join(templateDir, "meta.json");
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    throw new Error(`template metadata missing at ${path} (was the template deleted?)`);
+  }
+  return JSON.parse(raw) as FcTemplateMeta;
+}
+
+/**
+ * Materialize one clone of a template into `cloneDir`: copy the vmstate and the
+ * disks, hard-link the memory file, and rewrite the snapshot's embedded paths.
+ *
+ * The memory file is **hard-linked, not copied** — Firecracker maps it
+ * copy-on-write (`MAP_PRIVATE`), so every clone reads the same inode and writes
+ * only its own private pages. That is what makes a fork cost ~0 bytes and
+ * milliseconds instead of a gigabyte copy. Disks are reflinked (CoW on
+ * btrfs/xfs) or copied, because guest writes must land in the clone's own file.
+ *
+ * Exported so the host-agnostic check can exercise the layout without KVM.
+ */
+export function prepareForkClone(
+  templateDir: string,
+  cloneDir: string,
+): { vmstate: string; memFile: string } {
+  const meta = readTemplateMeta(templateDir);
+  const vmstate = join(cloneDir, "snapshot.vmstate");
+  const memFile = join(cloneDir, "snapshot.mem");
+  cloneFile(join(templateDir, "snapshot.vmstate"), vmstate);
+  linkOrClone(join(templateDir, "snapshot.mem"), memFile);
+  for (const disk of meta.disks) cloneFile(join(templateDir, disk), join(cloneDir, disk));
+  // The vmstate pins the template's absolute paths; point them at this clone.
+  writeFileSync(vmstate, rewriteSnapshotPaths(readFileSync(vmstate, "utf8"), templateDir, cloneDir));
+  return { vmstate, memFile };
+}
+
 
 /**
  * Firecracker microVM driver (Linux, KVM). Each sandbox is a Firecracker microVM:
@@ -704,6 +778,174 @@ export class FirecrackerDriver extends AgentDriver {
     for (const s of [vm.apiSock, vm.vsockUds]) rmQuiet(s);
   }
 
+  // --- templates + snapshot fork ---------------------------------------------
+
+  /** Where a named template's snapshot + disks live. */
+  private templateDir(name: string): string {
+    return join(this.cfg.stateDir, "_templates", name);
+  }
+
+  /**
+   * Capture a live sandbox as a reusable template.
+   *
+   * The guest is paused, a Full snapshot is written, and the snapshot plus the
+   * disks it references are copied into the template dir with the embedded paths
+   * rewritten to point there. The **source sandbox is then resumed from its own
+   * snapshot**, so capturing is non-destructive: it keeps running with its
+   * processes intact and the caller sees no pause.
+   *
+   * The template must never contain a live gateway token — the daemon mints a
+   * per-sandbox token at create time and injects it through the agent, so the
+   * snapshot only ever holds the source sandbox's own (revocable) token.
+   */
+  async createTemplate(opts: CreateTemplateOptions): Promise<TemplateInfo> {
+    const vm = this.vms.get(opts.sourceId);
+    if (!vm) throw new Error(`firecracker: sandbox ${opts.sourceId} is not running`);
+    if (vm.net) {
+      // The guest's NIC (TAP name, MAC, IP, default route) is baked into the
+      // snapshot, so every clone would land on the source's TAP with the same
+      // address. Refuse rather than hand out colliding clones.
+      throw new Error(
+        "firecracker: cannot capture a template from a networked sandbox " +
+          "(the guest's NIC configuration is baked into the snapshot)",
+      );
+    }
+    const srcVmstate = join(vm.stateDir, "snapshot.vmstate");
+    const srcMem = join(vm.stateDir, "snapshot.mem");
+
+    await this.exec(opts.sourceId, "sync", {}, () => {}).catch(() => {});
+    const api = new FcApi(vm.apiSock);
+    await api.call(FC_PAUSE_VM);
+    await api.call(buildSnapshotCreateCall(srcVmstate, srcMem));
+    this.vms.delete(opts.sourceId);
+    await killAndWait(vm.proc);
+    for (const s of [vm.apiSock, vm.vsockUds]) rmQuiet(s);
+
+    const dir = this.templateDir(opts.name);
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    cloneFile(srcVmstate, join(dir, "snapshot.vmstate"));
+    cloneFile(srcMem, join(dir, "snapshot.mem"));
+    const disks: string[] = [];
+    for (const disk of TEMPLATE_DISKS) {
+      const src = join(vm.stateDir, disk);
+      if (!existsSync(src)) continue;
+      cloneFile(src, join(dir, disk));
+      disks.push(disk);
+    }
+    // Point the template's copy at itself, so a fork only has to rewrite
+    // templateDir → cloneDir (never the source sandbox's dir).
+    writeFileSync(
+      join(dir, "snapshot.vmstate"),
+      rewriteSnapshotPaths(readFileSync(join(dir, "snapshot.vmstate"), "utf8"), vm.stateDir, dir),
+    );
+    const meta: FcTemplateMeta = {
+      name: opts.name,
+      image: opts.image,
+      limits: opts.limits,
+      createdAt: new Date().toISOString(),
+      sourceSandboxId: opts.sourceId,
+      disks,
+      sourceDir: vm.stateDir,
+    };
+    writeFileSync(join(dir, "meta.json"), JSON.stringify(meta, null, 2));
+    const sizeBytes = dirSize(dir);
+
+    // Resume the source from its own snapshot — capturing must not disturb it.
+    await this.resumeFromSnapshot(opts.sourceId, vm.stateDir, srcVmstate, srcMem);
+    const resumed = this.vms.get(opts.sourceId);
+    if (resumed && vm.net) resumed.net = vm.net; // keep the TAP teardown wired
+    log.info("firecracker template captured", {
+      template: opts.name,
+      sandbox: opts.sourceId,
+      sizeBytes,
+    });
+    return {
+      name: meta.name,
+      image: meta.image,
+      limits: meta.limits,
+      createdAt: meta.createdAt,
+      sizeBytes,
+      sourceSandboxId: meta.sourceSandboxId,
+    };
+  }
+
+  /**
+   * Bring a sandbox live by restoring a template into a fresh VMM — no kernel
+   * boot, no setup, no clone. Each clone gets its own state dir, its own disks,
+   * and a fresh guest identity (see {@link reseedGuest}).
+   */
+  async fork(opts: ForkOptions): Promise<void> {
+    const id = opts.id;
+    if (this.vms.has(id)) return;
+    const dir = this.templateDir(opts.template);
+    const meta = readTemplateMeta(dir); // fail before touching the state dir
+    const stateDir = join(this.cfg.stateDir, id);
+    mkdirSync(stateDir, { recursive: true });
+    const { vmstate, memFile } = prepareForkClone(dir, stateDir);
+
+    const loadSnapshot = async (): Promise<FcVm> => {
+      const vm = await this.spawnVmm(stateDir, opts.cpuset);
+      try {
+        await new FcApi(vm.apiSock).call(buildSnapshotLoadCall(vmstate, memFile));
+        return vm;
+      } catch (err) {
+        await killAndWait(vm.proc);
+        throw err;
+      }
+    };
+    const vm = await this.withOneRetry(id, loadSnapshot, "snapshot fork");
+    this.vms.set(id, vm);
+    try {
+      await this.waitForAgent(vm);
+      // One-shot, like a resume: the guest diverges the moment it runs, so a
+      // later `start` must cold-boot rather than resurrect this stale past.
+      for (const f of [vmstate, memFile]) rmQuiet(f);
+      await this.reseedGuest(id, opts);
+      if (opts.env && Object.keys(opts.env).length) {
+        await this.withConn(id, (c) => c.setEnv(opts.env!));
+      }
+    } catch (err) {
+      this.vms.delete(id);
+      await killAndWait(vm.proc);
+      throw err;
+    }
+    log.info("firecracker VM forked from template", {
+      sandbox: id,
+      template: opts.template,
+      image: meta.image,
+    });
+  }
+
+  /**
+   * Give a restored clone a fresh identity. Clones share the template's RAM at
+   * fork time, so without this every clone would report the same hostname and
+   * machine-id and — worse — share the kernel CRNG state, making their random
+   * numbers mutually predictable. The agent reseeds the CRNG, sets the hostname
+   * and machine-id, and fixes the clock to the host's wall time.
+   *
+   * Protected so the host-agnostic check can stub the guest round-trip.
+   */
+  protected async reseedGuest(id: string, _opts: ForkOptions): Promise<void> {
+    await this.withConn(id, (c) =>
+      c.reseed({
+        hostname: `hotcell-${id}`,
+        machineId: randomUUID(),
+        unixTime: Math.floor(Date.now() / 1000),
+      }),
+    );
+  }
+
+  /** Delete a template and its on-disk snapshot. Idempotent. */
+  async deleteTemplate(name: string): Promise<void> {
+    rmSync(this.templateDir(name), { recursive: true, force: true });
+  }
+
+  /** Firecracker can capture and restore snapshot templates. */
+  supportsTemplates(): boolean {
+    return true;
+  }
+
   async stop(id: string): Promise<void> {
     const vm = this.vms.get(id);
     if (!vm) return;
@@ -805,10 +1047,40 @@ function killAndWait(proc: ChildProcess, timeoutMs = 3000): Promise<void> {
  *  plain sparse-aware copy. Gives each sandbox its own workspace disk cheaply. */
 function cloneFile(src: string, dst: string): void {
   try {
-    execFileSync("cp", ["--reflink=auto", src, dst]);
+    // `--reflink` is GNU-only; on other hosts this fails and we fall back.
+    execFileSync("cp", ["--reflink=auto", src, dst], { stdio: ["ignore", "ignore", "ignore"] });
   } catch {
     execFileSync("cp", [src, dst]);
   }
+}
+
+/** Hard-link `src`→`dst`, falling back to a copy across filesystems. Used for a
+ *  template's memory file: Firecracker maps it copy-on-write, so every clone can
+ *  share one inode and pay nothing for the fork. */
+function linkOrClone(src: string, dst: string): void {
+  try {
+    linkSync(src, dst);
+  } catch {
+    cloneFile(src, dst);
+  }
+}
+
+/** Total bytes of the regular files directly inside `dir` (template footprint). */
+function dirSize(dir: string): number {
+  let total = 0;
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      try {
+        total += statSync(join(dir, entry.name)).size;
+      } catch {
+        /* raced with a delete */
+      }
+    }
+  } catch {
+    /* not there */
+  }
+  return total;
 }
 
 /** Grow an ext4 image file to `gb` gigabytes (truncate + resize2fs). Used to

@@ -16,12 +16,15 @@ import type {
 import { createNamedDriver } from "./index.js";
 import type {
   CreateOptions,
+  CreateTemplateOptions,
   Driver,
+  ForkOptions,
   HostInfo,
   ProcessLiveness,
   SandboxStats,
   StartProcessResult,
   TcpBridge,
+  TemplateInfo,
   TerminalOptions,
   TerminalSession,
 } from "./types.js";
@@ -95,6 +98,37 @@ export class DriverRouter implements Driver {
   canSnapshot(id: string): boolean {
     const d = this.forId(id);
     return typeof d.snapshot === "function" && (d.canSnapshot ? d.canSnapshot(id) : true);
+  }
+
+  /** Capture a template from a live sandbox on that sandbox's own driver. */
+  createTemplate(opts: CreateTemplateOptions): Promise<TemplateInfo> {
+    const d = this.forId(opts.sourceId);
+    if (typeof d.createTemplate !== "function") {
+      throw new Error(`driver ${d.name} cannot capture templates`);
+    }
+    return d.createTemplate(opts);
+  }
+
+  /** Restore a template into a fresh sandbox on the template's driver. */
+  fork(opts: ForkOptions): Promise<void> {
+    const d = this.forOpts(opts);
+    if (typeof d.fork !== "function") {
+      throw new Error(`driver ${d.name} cannot fork templates`);
+    }
+    return d.fork(opts);
+  }
+
+  /** Delete a template on the driver that owns it. */
+  deleteTemplate(name: string, driverName?: string): Promise<void> {
+    const d = this.instance(driverName);
+    if (typeof d.deleteTemplate !== "function") return Promise.resolve();
+    return d.deleteTemplate(name);
+  }
+
+  /** Whether the named driver (default: the daemon default) can fork templates. */
+  supportsTemplates(driverName?: string): boolean {
+    const d = this.instance(driverName);
+    return typeof d.fork === "function" && typeof d.createTemplate === "function";
   }
   /** Startup egress reconcile on the default driver (where enforcement lives). */
   async initEgress(): Promise<void> {

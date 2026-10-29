@@ -36,6 +36,7 @@ import type {
   ResourceLimits,
   SandboxRecord,
   SessionInfo,
+  TemplateRecord,
 } from "../types.js";
 import { readFileSync } from "node:fs";
 
@@ -65,6 +66,10 @@ interface Deps {
  *   GET    /healthz
  *   POST   /sandboxes                      -> create ({detach: true} returns a `creating` record immediately; poll GET /sandboxes/:id)
  *   GET    /sandboxes                      -> list
+ *   POST   /templates                      -> capture a running sandbox as a snapshot template ({name, from})
+ *   GET    /templates                      -> list templates
+ *   DELETE /templates/:name                -> delete a template and its snapshot
+ *   (POST /sandboxes with {template} restores a template into a fresh VMM)
  *   GET    /sandboxes/:id                  -> get
  *   DELETE /sandboxes/:id                  -> destroy (removes volume too)
  *   GET    /sandboxes/:id/metrics          -> live stats + cumulative usage + cost
@@ -710,6 +715,21 @@ async function handle(
     }, body);
   }
 
+  // --- templates (microVM snapshot fork) ------------------------------------
+  if (method === "GET" && path === "/templates") {
+    return sendJson(res, 200, { templates: store.listTemplates() });
+  }
+
+  if (method === "POST" && path === "/templates") {
+    const body = await readJson(req, config.maxBodyBytes);
+    return createTemplateRoute(res, { driver, store }, body);
+  }
+
+  const templateMatch = path.match(/^\/templates\/([^/]+)$/);
+  if (method === "DELETE" && templateMatch) {
+    return deleteTemplateRoute(res, { driver, store }, decodeURIComponent(templateMatch[1]));
+  }
+
   if (method === "GET" && path === "/sandboxes") {
     return sendJson(res, 200, { sandboxes: store.list() });
   }
@@ -966,15 +986,125 @@ async function handle(
   sendJson(res, 404, { error: `no route for ${method} ${path}` });
 }
 
+/** Template names double as on-disk directory names, so keep them boring. */
+const TEMPLATE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+
+/** Human-readable resource shape, for error messages. */
+function describeLimits(limits: ResourceLimits): string {
+  const parts = [
+    limits.memoryMb ? `${limits.memoryMb} MiB` : null,
+    limits.cpus ? `${limits.cpus} cpu` : null,
+    limits.pidsLimit ? `${limits.pidsLimit} pids` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "unlimited";
+}
+
+/**
+ * Capture a running sandbox as a reusable template. The driver pauses the guest,
+ * writes a Full snapshot, copies it (plus its disks) into the template dir, and
+ * resumes the source — so capturing does not disturb the sandbox.
+ */
+async function createTemplateRoute(
+  res: ServerResponse,
+  { driver, store }: Pick<Deps, "driver" | "store">,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!TEMPLATE_NAME_RE.test(name)) {
+    return sendJson(res, 400, {
+      error: "name must be 1-63 chars of lowercase letters, digits, '.', '_' or '-' (starting alphanumeric)",
+    });
+  }
+  const from = typeof body.from === "string" ? body.from : "";
+  const record = store.get(from);
+  if (!record) return sendJson(res, 404, { error: `sandbox "${from}" not found` });
+  if (record.status !== "running") {
+    return sendJson(res, 409, {
+      error: `sandbox "${from}" must be running to capture a template (status: ${record.status})`,
+    });
+  }
+  if (store.getTemplate(name)) {
+    return sendJson(res, 409, { error: `template "${name}" already exists` });
+  }
+  const driverName = record.driver ?? driver.name;
+  if (!driver.supportsTemplates?.(driverName)) {
+    return sendJson(res, 501, {
+      error: `driver "${driverName}" cannot capture templates (snapshot fork needs a microVM driver)`,
+    });
+  }
+  try {
+    const info = await driver.createTemplate!({
+      name,
+      sourceId: from,
+      image: record.image,
+      limits: record.limits,
+    });
+    const template: TemplateRecord = { ...info, name, driver: driverName };
+    store.addTemplate(template);
+    audit({
+      event: "template.create",
+      sandboxId: from,
+      driver: driverName,
+      attributes: { template: name, image: record.image, sizeBytes: info.sizeBytes },
+    });
+    return sendJson(res, 201, template);
+  } catch (err) {
+    return sendJson(res, 422, { error: `template capture failed: ${errorMessage(err)}` });
+  }
+}
+
+/** Delete a template: the daemon row first, then the driver's snapshot on disk. */
+async function deleteTemplateRoute(
+  res: ServerResponse,
+  { driver, store }: Pick<Deps, "driver" | "store">,
+  name: string,
+): Promise<void> {
+  const template = store.getTemplate(name);
+  if (!template) return sendJson(res, 404, { error: "not found" });
+  store.removeTemplate(name);
+  await driver.deleteTemplate?.(name, template.driver).catch((err: unknown) => {
+    log.warn("template delete: driver cleanup failed", { template: name, error: errorMessage(err) });
+  });
+  audit({ event: "template.delete", driver: template.driver, attributes: { template: name } });
+  return sendJson(res, 200, { name, deleted: true });
+}
+
 async function createSandbox(
   res: ServerResponse,
   { config, driver, store, capacity, bootScheduler }: Pick<Deps, "config" | "driver" | "store" | "capacity" | "bootScheduler">,
   body: Record<string, unknown>,
 ): Promise<void> {
   const id = SandboxStore.newId();
-  const image = typeof body.image === "string" ? body.image : config.defaultImage;
+  // A template create restores a snapshot instead of booting: the image, driver
+  // and resource shape are all baked into the snapshot, so they come from the
+  // template record rather than the request.
+  const templateName = typeof body.template === "string" && body.template ? body.template : undefined;
+  const template = templateName ? store.getTemplate(templateName) : undefined;
+  if (templateName && !template) {
+    return sendJson(res, 404, { error: `template "${templateName}" not found` });
+  }
+  if (template) {
+    const baked = [
+      body.repo ? "repo" : null,
+      Array.isArray(body.setup) && body.setup.length ? "setup" : null,
+      body.branch ? "branch" : null,
+      body.networked === true ? "networked" : null,
+      body.writableRootfs === true ? "writableRootfs" : null,
+    ].filter(Boolean);
+    if (baked.length) {
+      return sendJson(res, 400, {
+        error: `a template already has its workspace and networking baked in; drop ${baked.join(", ")}`,
+      });
+    }
+    if (!driver.supportsTemplates?.(template.driver)) {
+      return sendJson(res, 501, {
+        error: `driver "${template.driver}" cannot restore templates`,
+      });
+    }
+  }
+  const image = template?.image ?? (typeof body.image === "string" ? body.image : config.defaultImage);
   // Per-sandbox isolation selection: pick the runtime driver (default SBX_DRIVER).
-  const driverName = typeof body.driver === "string" && body.driver ? body.driver : config.driver;
+  const driverName = template?.driver ?? (typeof body.driver === "string" && body.driver ? body.driver : config.driver);
   if (!DRIVER_NAMES.includes(driverName as (typeof DRIVER_NAMES)[number])) {
     return sendJson(res, 400, {
       error: `unknown driver "${driverName}" (expected: ${DRIVER_NAMES.join(" | ")})`,
@@ -1004,9 +1134,24 @@ async function createSandbox(
   const cpuset = typeof body.cpuset === "string" && body.cpuset ? body.cpuset : undefined;
 
   // Resolve hard resource caps: per-create value overrides the daemon default.
+  // A fork cannot change the snapshot's shape (guest RAM is part of the
+  // snapshot), so any limit the caller *does* set must match the template.
   const resolved = resolveLimits(body, config);
   if ("error" in resolved) return sendJson(res, 400, { error: resolved.error });
-  const limits = resolved.limits;
+  const limits = template ? template.limits : resolved.limits;
+  if (template) {
+    const mismatch = (["memoryMb", "cpus", "pidsLimit"] as const).filter((key) => {
+      const want = body[key];
+      return typeof want === "number" && want !== (template.limits[key] ?? 0);
+    });
+    if (mismatch.length) {
+      return sendJson(res, 400, {
+        error:
+          `template "${template.name}" was captured at ${describeLimits(template.limits)}; ` +
+          `a fork must match it (${mismatch.join(", ")} differ)`,
+      });
+    }
+  }
 
   // Admission control: refuse to over-subscribe the host's memory budget. The
   // reservation pends until the record is written (or provisioning fails), so
@@ -1101,36 +1246,32 @@ async function createSandbox(
   audit({ event: "sandbox.create", sandboxId: id, driver: driverName, attributes: { image, repo: repo ? safeRepoForLog(repo) : "", branch: (repoRef ?? branchRaw ?? "").slice(0, 256), memoryMb: limits.memoryMb ?? 0, cpus: limits.cpus ?? 0 } });
   if (egressToken) store.addEgressToken(egressToken, id, egressPolicy);
 
+  const onProgress = (phase: string): void => {
+    const r = store.get(id);
+    if (r?.status === "creating") {
+      r.statusReason = phase;
+      store.add(r);
+    }
+  };
+  const createOpts = {
+    id, image, driver: driverName, env, labels, persist, setup: setupSteps,
+    repo, repoRef, limits, networked, writableRootfs, cpuset, onProgress,
+  };
+  // A template create restores a snapshot into a fresh VMM — no kernel boot, no
+  // clone, no setup — so it skips the boot scheduler entirely (it is already
+  // sub-second) and never re-runs the baked-in provisioning steps.
   const provision = () =>
-    (driverName === "firecracker" || driverName === "applevz") && bootScheduler
-      ? bootScheduler.run(`create:${id}`, () => driver.create({
-        id, image, driver: driverName, env, labels, persist, setup: setupSteps,
-        repo, repoRef, limits, networked, writableRootfs, cpuset,
-        onProgress: (phase) => {
+    template
+      ? driver.fork!({ ...createOpts, template: template.name })
+      : (driverName === "firecracker" || driverName === "applevz") && bootScheduler
+        ? bootScheduler.run(`create:${id}`, () => driver.create(createOpts), () => {
           const r = store.get(id);
           if (r?.status === "creating") {
-            r.statusReason = phase;
+            r.statusReason = "queued for microVM boot";
             store.add(r);
           }
-        },
-      }), () => {
-        const r = store.get(id);
-        if (r?.status === "creating") {
-          r.statusReason = "queued for microVM boot";
-          store.add(r);
-        }
-      })
-      : driver.create({
-      id, image, driver: driverName, env, labels, persist, setup: setupSteps,
-      repo, repoRef, limits, networked, writableRootfs, cpuset,
-      onProgress: (phase) => {
-        const r = store.get(id);
-        if (r?.status === "creating") {
-          r.statusReason = phase;
-          store.add(r);
-        }
-      },
-      });
+        })
+        : driver.create(createOpts);
 
   // Terminal transitions. Both re-check the store: a DELETE mid-create is the
   // cancel path, and must win — never resurrect a destroyed record.
