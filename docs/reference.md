@@ -72,8 +72,7 @@ Set these before `hotcell start` (they're inherited by the daemon) or on `hotcel
 |---|---|---|
 | `HOTCELL_HOST` / `HOTCELL_PORT` | `127.0.0.1` / `4750` | REST API bind |
 | `HOTCELL_DRIVER` | `container` | Default runtime driver — all three ship live: `container` (Docker, Linux + macOS), `firecracker` (Linux + KVM), `applevz` (macOS). Also selectable **per sandbox** at create time (`driver: …`), so one daemon mixes containers and microVMs |
-| `HOTCELL_IMAGE` | `ghcr.io/sinameraji/hotcell-base` | Default sandbox image (python + node + git + build tools) |
-| `HOTCELL_CONTAINER_WARM_POOL` | `0` (off) | Keep this many pre-started containers for the exact default image/resource shape; spares are charged to admission capacity |
+| `HOTCELL_IMAGE` | `ghcr.io/sinameraji/hotcell-base:latest` | Default sandbox image (python + node + git + build tools) |
 | `HOTCELL_CONTAINER_WARM_POOL` | `0` (off) | Keep this many pre-started containers for the exact default image/resource shape; spares are charged to admission capacity |
 | `HOTCELL_AGENT_BIN` | packaged agent for Docker host architecture | Override the static Linux guest-agent binary used by container sandboxes; from a source checkout, build both defaults with `npm run build:agent` |
 | `HOTCELL_DEFAULT_MEMORY_MB` / `HOTCELL_DEFAULT_CPUS` / `HOTCELL_DEFAULT_PIDS` | `0` (unlimited) | Default per-sandbox hard caps (RAM MiB / fractional cores / process count) |
@@ -95,6 +94,7 @@ Set these before `hotcell start` (they're inherited by the daemon) or on `hotcel
 | `HOTCELL_ALLOWLIST_FILE` / `HOTCELL_ALLOWLIST_EXTRA` / `HOTCELL_ALLOW_SOURCE_CONTROL` | defaults / — / `true` | Forward-proxy host allowlist: full override file / extra hosts / include the git-forge tier |
 | `HOTCELL_EGRESS_HOST` / `HOTCELL_EGRESS_ADVERTISE_HOST` | `127.0.0.1` / `host.docker.internal` | Gateway bind address / host advertised in egress base URLs |
 | **Other** | | |
+| `HOTCELL_HOME` | `~/.hotcell` | Home for `config.json`, `api-key` and `keys.json` **only**. Daemon state (`HOTCELL_DB`, backups, VM state, image caches, `audit.jsonl`) still defaults to `~/.hotcell`; set those variables explicitly to relocate it |
 | `HOTCELL_DB` | `~/.hotcell/state.db` | SQLite state (`:memory:` = ephemeral) |
 | `HOTCELL_BACKUP_DIR` | `~/.hotcell/backups` | Backup tarballs |
 | `HOTCELL_SLEEP_AFTER_MS` | `0` | Default idle auto-pause (`0` = off) |

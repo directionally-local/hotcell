@@ -100,10 +100,9 @@ export interface Config {
   host: string;
   port: number;
   /**
-   * Default OCI image for new sandboxes. Defaults to a small Debian-based
-   * Python image (ships /bin/bash + python3) so the vertical slice works with
-   * zero local image builds. Build images/base and set SBX_IMAGE=sbx/base:latest
-   * for the richer toolset (Node 22, git, ripgrep, …).
+   * Default OCI image for new sandboxes: `ghcr.io/sinameraji/hotcell-base:latest`
+   * (Python, Node, git, bash, ripgrep). Override with `HOTCELL_IMAGE`, or build
+   * `images/base` yourself and point `HOTCELL_IMAGE` at your own tag.
    */
   defaultImage: string;
   /**
@@ -300,7 +299,9 @@ export interface Config {
   logFormat: LogFormat;
   /**
    * API key required on every REST call (except `/healthz` and the dashboard
-   * HTML). Empty string (the default) disables auth — loopback, single-tenant.
+   * HTML). Auth is always on: `index.ts` fills this from `HOTCELL_API_KEY` or,
+   * when unset, a generated key persisted in `${HOTCELL_HOME:-~/.hotcell}/api-key`.
+   * An empty value here only means "not configured yet".
    */
   apiKey: string;
   /**
