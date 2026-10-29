@@ -97,7 +97,7 @@ wrappers (`Sandbox.exec`, …) stay hand-written on top of the generated layer.
 /sdk/typescript     npm package (mirrors Cloudflare surface)
 /sdk/python         pip package
 /web                React dashboard (embedded via go:embed)
-/images             base sandbox OCI image (Python 3.11, Node 22, git, bash)
+/images             base sandbox OCI image (Python 3.11, Node 22, git, bash, tsrs)
 ```
 
 ---
