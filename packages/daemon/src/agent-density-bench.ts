@@ -202,6 +202,8 @@ interface AgentResult {
   diskMb: number;
   taskMs: number;
   exitCode: number;
+  /** Tail of the task's output, kept so a non-zero exit is diagnosable. */
+  output: string;
 }
 
 async function measureAgent(profile: Profile, index: number, sampleMs: number): Promise<AgentResult> {
@@ -265,6 +267,7 @@ async function measureAgent(profile: Profile, index: number, sampleMs: number): 
       diskMb,
       taskMs,
       exitCode: task.code,
+      output: task.out.slice(-600),
     };
   } finally {
     await api("DELETE", `/sandboxes/${id}`).catch(() => {});
@@ -347,6 +350,7 @@ async function main(): Promise<number> {
             `burst ${a.burstCores} cores · avg ${a.avgCores} cores · disk ${a.diskMb} MiB · ` +
             `${(a.taskMs / 1000).toFixed(1)}s · exit ${a.exitCode}`,
         );
+        if (a.exitCode !== 0) console.error(`[density]     output: ${a.output.trim()}`);
       }
     }
   }
