@@ -711,6 +711,10 @@ export class ContainerDriver extends AgentDriver {
       opts.onProgress?.("cloning repo");
       await this.cloneRepo(opts.id, opts.repo, opts.repoRef);
     }
+    if (opts.patch) {
+      opts.onProgress?.("applying patch");
+      await this.applyPatch(opts.id, opts.repo, opts.patch);
+    }
     if (opts.setup?.length) opts.onProgress?.("running setup");
     await this.runSetup(opts.id, opts.setup ?? []);
   }
@@ -731,6 +735,24 @@ export class ContainerDriver extends AgentDriver {
       throw new Error(`git clone failed: ${redactSecrets((stderr || stdout).trim()) || `exit ${exitCode}`}`);
     }
     log.info("repo cloned", { sandbox: id, repo: safeRepoForLog(repo) });
+  }
+
+  /**
+   * Apply a unified diff to the cloned repo. Fatal on failure: the agent must
+   * start from the exact tree the caller sent.
+   */
+  private async applyPatch(id: string, repo: string | undefined, patch: string): Promise<void> {
+    if (!repo) throw new Error("patch requires repo");
+    const repoName = repo.replace(/\.git$/, "").replace(/\/+$/, "").split("/").pop() || "repo";
+    const b64 = Buffer.from(patch, "utf8").toString("base64");
+    const script =
+      `echo ${shellEscape(b64)} | base64 -d > /tmp/hotcell.patch && ` +
+      `git -C /workspace/${shellEscape(repoName)} apply --whitespace=nowarn /tmp/hotcell.patch`;
+    const { stdout, stderr, exitCode } = await this.execCapture(id, script);
+    if (exitCode !== 0) {
+      throw new Error(`git apply failed: ${redactSecrets((stderr || stdout).trim()) || `exit ${exitCode}`}`);
+    }
+    log.info("patch applied", { sandbox: id, repo: safeRepoForLog(repo) });
   }
 
   /**

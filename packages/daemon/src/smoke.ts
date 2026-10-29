@@ -633,8 +633,8 @@ async function main(): Promise<number> {
       try {
         const baseUrl = await execAndCapture(endpoint, egCreate.id, "printenv OPENAI_BASE_URL");
         const keyVal = await execAndCapture(endpoint, egCreate.id, "printenv OPENAI_API_KEY");
-        if (!baseUrl.endsWith("/openai")) {
-          throw new Error(`expected OPENAI_BASE_URL .../openai, got "${baseUrl}"`);
+        if (!baseUrl.endsWith("/openai/v1")) {
+          throw new Error(`expected OPENAI_BASE_URL .../openai/v1, got "${baseUrl}"`);
         }
         if (!keyVal.startsWith("hc-")) {
           throw new Error(`expected OPENAI_API_KEY to be an egress token, got "${keyVal}"`);

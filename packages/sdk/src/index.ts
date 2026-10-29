@@ -243,6 +243,12 @@ export interface CreateOptions {
   /** Create + check out a NEW branch right after cloning `repo`; `"auto"` names it for you. */
   branch?: string;
   /**
+   * Unified diff applied to the cloned repo (in `/workspace/<repo>`) after
+   * `repoRef` is checked out and before `setup` — e.g. the caller's uncommitted
+   * changes. Requires `repo`. A patch that does not apply fails the create.
+   */
+  patch?: string;
+  /**
    * Runtime driver for this sandbox: `container` (default), `firecracker`
    * (Linux + KVM microVM), or `applevz` (macOS microVM) — one daemon can run
    * all three side by side. Omit for the daemon default.
@@ -471,6 +477,15 @@ export class HotcellClient {
       if (info.status === "creating") info = await this.waitForReady(info.id, onStatus);
     }
     return new Sandbox(this, info);
+  }
+
+  /**
+   * Provision a sandbox for one agent run in a single call: clone `repo`, apply
+   * `patch`, wire git through the egress gateway, and cap resources/spend.
+   * Equivalent to `getSandbox(undefined, { egress: true, ...options })`.
+   */
+  async createRunSandbox(options: CreateOptions & { repo: string }): Promise<Sandbox> {
+    return this.getSandbox(undefined, { egress: true, ...options });
   }
 
   /**

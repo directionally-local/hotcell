@@ -408,6 +408,13 @@ async function main(): Promise<void> {
             res.write(`data: {"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":100000,"completion_tokens":10000}}\n\n`);
           }
           res.end("data: [DONE]\n\n");
+        } else if (mode === "responses") {
+          json({ model: "gpt-4o", usage: { input_tokens: 100000, output_tokens: 10000 } });
+        } else if (mode === "responses-sse") {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.write(`event: response.created\ndata: {"type":"response.created","response":{"model":"gpt-4o"}}\n\n`);
+          res.write(`event: response.completed\ndata: {"type":"response.completed","response":{"model":"gpt-4o","usage":{"input_tokens":100000,"output_tokens":10000}}}\n\n`);
+          res.end();
         } else {
           json({ model: body.model, usage: { prompt_tokens: 10, completion_tokens: 10 } });
         }
@@ -538,6 +545,22 @@ async function main(): Promise<void> {
         await send(t3, "/openai/v1/chat/completions", { model: "gpt-4o", stream: true, messages: [] }, "sse-none");
         assert.equal(lastSeen().body.stream_options, undefined, "uncapped stream not rewritten");
         ok("openai stream under a cap: include_usage injected + metered; usage-less stream charged its reservation");
+      }
+
+      // d) OpenAI Responses API (Codex-style): usage is read from `response.usage`
+      //    both non-streaming and from the `response.completed` SSE event, so a
+      //    spend cap meters Codex traffic instead of falling back to the reservation.
+      {
+        const expected = (100000 * 2.5 + 10000 * 10) / 1e6;
+        const t = mint({ spendCapUsd: 5 });
+        const r = await send(t, "/openai/v1/responses", { model: "gpt-4o", input: "hi" }, "responses");
+        assert.equal(r.status, 200);
+        assert.ok(Math.abs(spend(t) - expected) < 1e-12, `responses cost ${spend(t)} != ${expected}`);
+        const ts = mint({ spendCapUsd: 5 });
+        const rs = await send(ts, "/openai/v1/responses", { model: "gpt-4o", input: "hi", stream: true }, "responses-sse");
+        assert.equal(rs.status, 200);
+        assert.ok(Math.abs(spend(ts) - expected) < 1e-12, `responses stream cost ${spend(ts)} != ${expected}`);
+        ok("openai Responses API: response.usage metered (non-streaming + response.completed SSE)");
       }
     } finally {
       capEgress.close();

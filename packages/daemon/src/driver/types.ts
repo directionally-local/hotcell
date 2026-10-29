@@ -117,6 +117,12 @@ export interface CreateOptions {
   repo?: string;
   /** Branch/tag to check out when cloning `repo` (default: the repo's default branch). */
   repoRef?: string;
+  /**
+   * Unified diff applied to the cloned repo (in `/workspace/<repo>`) after
+   * `repoRef` is checked out and before `setup`. Requires `repo`. A patch that
+   * does not apply fails the create (unlike best-effort `setup`).
+   */
+  patch?: string;
   /** Hard CPU/memory/PID caps for the sandbox (resolved effective values). */
   limits?: ResourceLimits;
   /**

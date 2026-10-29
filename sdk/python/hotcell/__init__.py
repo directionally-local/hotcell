@@ -418,6 +418,7 @@ class HotcellClient:
         setup: Optional[List[str]] = None,
         repo: Optional[str] = None,
         repo_ref: Optional[str] = None,
+        patch: Optional[str] = None,
         driver: Optional[str] = None,
         branch: Optional[str] = None,
         networked: Optional[bool] = None,
@@ -462,6 +463,8 @@ class HotcellClient:
             body["repo"] = repo
         if repo_ref is not None:
             body["repoRef"] = repo_ref
+        if patch is not None:
+            body["patch"] = patch
         if driver is not None:
             body["driver"] = driver
         if branch is not None:
@@ -485,6 +488,16 @@ class HotcellClient:
             if parsed.status == "creating":
                 parsed = self._wait_for_ready(parsed.id, on_status)
         return Sandbox(self, parsed)
+
+    def create_run_sandbox(self, *, repo: str, **kwargs: Any) -> "Sandbox":
+        """Provision a sandbox for one agent run in a single call.
+
+        Clones ``repo``, applies ``patch``, wires git through the egress gateway,
+        and caps resources/spend. Equivalent to
+        ``get_sandbox(egress=True, repo=repo, **kwargs)``.
+        """
+        kwargs.setdefault("egress", True)
+        return self.get_sandbox(repo=repo, **kwargs)
 
     def _wait_for_ready(
         self,

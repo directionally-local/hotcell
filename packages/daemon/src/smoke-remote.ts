@@ -76,8 +76,8 @@ async function main(): Promise<number> {
     //    sandbox so an LLM SDK routes through the gateway with no real key.
     const baseUrlRes = await sandbox.exec("printenv OPENAI_BASE_URL");
     const baseUrl = baseUrlRes.stdout.trim();
-    if (!baseUrl.endsWith("/openai")) {
-      throw new Error(`expected OPENAI_BASE_URL to end with "/openai", got "${baseUrl}"`);
+    if (!baseUrl.endsWith("/openai/v1")) {
+      throw new Error(`expected OPENAI_BASE_URL to end with "/openai/v1", got "${baseUrl}"`);
     }
     console.error(`[smoke-remote] OPENAI_BASE_URL auto-wired to ${baseUrl}`);
 
@@ -119,7 +119,7 @@ async function main(): Promise<number> {
       });
       const curl =
         `curl -sS -o /dev/null -w '%{http_code}' --max-time 30 ` +
-        `-X POST "$OPENAI_BASE_URL/v1/chat/completions" ` +
+        `-X POST "$OPENAI_BASE_URL/chat/completions" ` +
         `-H "content-type: application/json" ` +
         `-H "authorization: Bearer $OPENAI_API_KEY" ` +
         `-d '${body}'`;

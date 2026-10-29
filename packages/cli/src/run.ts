@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { HotcellClient } from "@hotcell/sdk";
 import { formatError, parseLimitFlags } from "./util.js";
 import type { GlobalArgs } from "./cli.js";
@@ -32,6 +33,8 @@ export async function runCommand(
   const setup = typeof flags.setup === "string" ? [flags.setup] : undefined;
   const repo = typeof flags.repo === "string" ? flags.repo : undefined;
   const repoRef = typeof flags.ref === "string" ? flags.ref : undefined;
+  const patch =
+    typeof flags.patch === "string" ? readFileSync(flags.patch, "utf8") : undefined;
   // Project `inject` variables, overridable per-run by an explicit --env.
   let env: Record<string, string> | undefined;
   try {
@@ -55,7 +58,7 @@ export async function runCommand(
     const baseOpts =
       image || env || sleepAfter !== undefined || egress || hasLimits || setup || repo ||
       egressSpendCapUsd !== undefined
-        ? { image, env, sleepAfter, egress, egressSpendCapUsd, setup, repo, repoRef, memoryMb, cpus, pidsLimit }
+        ? { image, env, sleepAfter, egress, egressSpendCapUsd, setup, repo, repoRef, patch, memoryMb, cpus, pidsLimit }
         : {};
     sandbox = await client.getSandbox(undefined, {
       ...baseOpts,

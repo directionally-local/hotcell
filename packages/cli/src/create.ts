@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { HotcellClient } from "@hotcell/sdk";
 import type { GlobalArgs } from "./cli.js";
 import { parseEnvPairs } from "./env.js";
@@ -43,6 +44,10 @@ export async function createCommand(
   const setup = setupSteps.length ? setupSteps : undefined;
   const repo = typeof flags.repo === "string" ? flags.repo : undefined;
   const repoRef = typeof flags.ref === "string" ? flags.ref : undefined;
+  // --patch <file>: a unified diff applied to the clone before setup (the
+  // caller's uncommitted changes). Requires --repo.
+  const patch =
+    typeof flags.patch === "string" ? readFileSync(flags.patch, "utf8") : undefined;
   // --template: restore a captured snapshot instead of booting. The workspace,
   // tooling and networking are already baked in, so provisioning flags conflict.
   const template = typeof flags.template === "string" ? flags.template : undefined;
@@ -117,6 +122,7 @@ export async function createCommand(
     setup,
     repo,
     repoRef,
+    patch,
     branch,
     template,
     memoryMb,
