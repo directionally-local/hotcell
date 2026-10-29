@@ -70,7 +70,7 @@ for path in sorted(glob.glob("src/*.py")):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    total += mod.f1(2)
+    total += getattr(mod, "f" + name[3:])(2)
 print("ok", total)
 EOF
 `;
