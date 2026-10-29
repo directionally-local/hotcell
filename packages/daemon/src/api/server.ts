@@ -462,7 +462,7 @@ function resolveLimits(
  */
 function normalizeRoute(path: string): string {
   const route = matchPath(path);
-  if (route) return route.path;
+  if (route) return route.path.replace(/\{([^}:]+)(?::[a-z]+)?\}/g, ":$1");
   return path.replace(/^\/sandboxes\/[^/]+/, "/sandboxes/:id");
 }
 
