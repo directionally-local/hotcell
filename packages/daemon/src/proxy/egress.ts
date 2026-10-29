@@ -27,6 +27,14 @@ import { RateLimiter } from "./ratelimit.js";
 export interface ResolvedProvider {
   /** Upstream base URL, e.g. `https://api.openai.com`. */
   baseUrl: string;
+  /**
+   * Path the provider's SDK expects its base URL to carry (e.g. `/v1` for the
+   * OpenAI SDK, which appends `/chat/completions` without a version prefix).
+   * Advertised to sandboxes as part of the auto-wired base URL. Only set when the
+   * provider still uses its built-in base URL, so an operator-repointed endpoint
+   * (e.g. a Cloudflare AI Gateway prefix) keeps its own path convention.
+   */
+  sdkBasePath?: string;
   /** Header the provider authenticates with (e.g. `authorization`, `x-api-key`). */
   authHeader: string;
   /** Render the auth header value from the real key (e.g. `Bearer ${k}`). */
@@ -55,6 +63,7 @@ export interface ResolvedProvider {
 const PROVIDER_DEFAULTS: Record<string, Omit<ResolvedProvider, "apiKey">> = {
   openai: {
     baseUrl: "https://api.openai.com",
+    sdkBasePath: "/v1",
     authHeader: "authorization",
     format: (k) => `Bearer ${k}`,
   },
@@ -65,6 +74,7 @@ const PROVIDER_DEFAULTS: Record<string, Omit<ResolvedProvider, "apiKey">> = {
   },
   openrouter: {
     baseUrl: "https://openrouter.ai/api",
+    sdkBasePath: "/v1",
     authHeader: "authorization",
     format: (k) => `Bearer ${k}`,
   },
@@ -105,7 +115,10 @@ export function buildProviders(config: Config): Record<string, ResolvedProvider>
       format = (k) => k;
     }
     if (baseUrl && authHeader && format !== undefined) {
-      providers[name] = { baseUrl, authHeader, format, apiKey };
+      // Only advertise the SDK path when the provider still points at its
+      // built-in base URL: an operator override carries its own path convention.
+      const sdkBasePath = custom?.baseUrl === undefined ? def?.sdkBasePath : undefined;
+      providers[name] = { baseUrl, authHeader, format, apiKey, ...(sdkBasePath ? { sdkBasePath } : {}) };
     }
   }
   // GitHub as a keyless provider: a sandbox reaches api.github.com through the
@@ -1067,7 +1080,7 @@ async function handleConnect(
   clientSocket.on("close", teardown);
 }
 
-interface ParsedUsage {
+export interface ParsedUsage {
   tokensIn: number;
   tokensOut: number;
   /** Provider-reported cost in USD (OpenRouter `usage.cost`); 0 if not reported. */
@@ -1094,7 +1107,7 @@ interface ParsedUsage {
  * across frames. `truncated` = the middle of the body was dropped, so only the
  * SSE frames in `head` and `tail` can be read.
  */
-function parseUsage(head: Buffer[], tail: Buffer[], truncated: boolean): ParsedUsage {
+export function parseUsage(head: Buffer[], tail: Buffer[], truncated: boolean): ParsedUsage {
   const acc: ParsedUsage = { tokensIn: 0, tokensOut: 0, cost: 0, found: false };
   if (!truncated) {
     const text = Buffer.concat([...head, ...tail]).toString("utf8");

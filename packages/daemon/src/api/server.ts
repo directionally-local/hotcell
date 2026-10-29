@@ -282,9 +282,9 @@ async function handleTerminalUpgrade(
  * sandbox points its SDK at, plus suggested env vars. The token is used in place
  * of each provider's real API key (the daemon swaps it for the real one).
  */
-function egressConfig(config: Config, advertiseHost?: string) {
+export function egressConfig(config: Config, advertiseHost?: string) {
   const base = `http://${advertiseHost ?? config.egressAdvertiseHost}:${config.egressPort}`;
-  const names = Object.keys(buildProviders(config));
+  const built = buildProviders(config);
   const ENV_HINT: Record<string, { baseUrlEnv: string; keyEnv: string }> = {
     openai: { baseUrlEnv: "OPENAI_BASE_URL", keyEnv: "OPENAI_API_KEY" },
     anthropic: { baseUrlEnv: "ANTHROPIC_BASE_URL", keyEnv: "ANTHROPIC_API_KEY" },
@@ -295,13 +295,16 @@ function egressConfig(config: Config, advertiseHost?: string) {
   // For custom/operator-defined providers, synthesize conventional env names
   // (`<NAME>_BASE_URL` / `<NAME>_API_KEY`) so auto-wiring still injects something
   // sensible. Operators can ignore these and wire their SDK by hand.
-  const providers = names.map((name) => {
+  const providers = Object.entries(built).map(([name, provider]) => {
     const envName = name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
     const hint = ENV_HINT[name] ?? {
       baseUrlEnv: `${envName}_BASE_URL`,
       keyEnv: `${envName}_API_KEY`,
     };
-    return { name, baseUrl: `${base}/${name}`, ...hint };
+    // The OpenAI SDK appends `/chat/completions` (no version prefix), so its base
+    // URL must carry `/v1`; the Anthropic and Gemini SDKs append their own
+    // version (`/v1/messages`, `/v1beta/…`), so they get no suffix.
+    return { name, baseUrl: `${base}/${name}${provider.sdkBasePath ?? ""}`, ...hint };
   });
   return { providers };
 }

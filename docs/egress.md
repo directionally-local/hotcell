@@ -12,7 +12,7 @@ hotcell keys add openrouter          # (or export HOTCELL_PROVIDER_KEY_OPENROUTE
 hotcell start
 
 # auto-wire a sandbox: OPENROUTER_BASE_URL + OPENROUTER_API_KEY (a token) are injected for you
-hotcell run --egress --keep "printenv OPENROUTER_BASE_URL"   # -> http://host.docker.internal:4752/openrouter
+hotcell run --egress --keep "printenv OPENROUTER_BASE_URL"   # -> http://host.docker.internal:4752/openrouter/v1
 ```
 
 ## Importing a whole .env
@@ -31,6 +31,8 @@ Each variable gets one of three dispositions, chosen by you:
 | `skip` | nothing. |
 
 hotcell classifies nothing. The only preselection is for env-var names the daemon already routes (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `GITHUB_API_KEY`) — a lookup of existing routes, not a guess — and even those are preselected, never locked. Choosing `gateway` for an unknown provider asks for its base URL and auth header once; that shape is saved to `.hotcell/env.json`, which holds **no secret values** and is meant to be committed, so a teammate's clone inherits every decision and re-enters only the secrets themselves.
+
+OpenAI-SDK providers (`openai`, `openrouter`) get a `/v1` suffix on the auto-wired base URL, because the OpenAI SDK appends `/chat/completions` without a version prefix; the Anthropic and Gemini SDKs append their own version (`/v1/messages`, `/v1beta/…`), so those base URLs carry none. An operator-repointed provider (e.g. a Cloudflare AI Gateway prefix) keeps its own path convention.
 
 The base-URL prompt is also the routability test: `postgres://…` is rejected because the gateway substitutes a credential in a request header and Postgres carries its password inside the protocol handshake. See [what the gateway can and can't protect](../README.md#what-the-gateway-can-and-cant-protect).
 
