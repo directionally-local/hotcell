@@ -28,6 +28,8 @@ jobs:
       - run: npm run build
       - name: unit tests (node:test)
         run: npm test
+      - name: generated API artifacts are current
+        run: npm run check:api
       - name: agent unit tests
         run: npm run test:agent
       - name: secrets-at-rest file modes (config.json, state.db)

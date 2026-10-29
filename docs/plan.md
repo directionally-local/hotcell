@@ -61,6 +61,16 @@ One self-contained control-plane daemon per host, a tiny in-sandbox agent, and t
 7. **Preview-URL proxy** — embedded reverse proxy with wildcard routing: `<id>.localhost` locally; `*.sandbox.<yourdomain>` with Caddy on-demand TLS (libraries: Caddy/certmagic) for remote hosts. Token-protected per port (mirrors Cloudflare's port tokens).
 8. **Egress credential proxy (phase 3)** — outbound proxy that injects provider API keys so agents reach any LLM provider (OpenAI, Anthropic, Vercel AI SDK, Cloudflare AI Gateway, OpenRouter) without keys baked into the sandbox, and optionally logs provider calls for cost/observability. Provider-agnostic: the sandbox runs the harness; we secure + observe its egress.
 
+**API surface (single source of truth).** The HTTP API is defined once in
+`packages/daemon/src/api/routes.ts`: method, path template, auth, request/response
+JSON Schema and stream kind per route. The daemon dispatches through that table,
+and `npm run generate:api` emits `docs/openapi.json`, the TypeScript route helpers
+(`packages/sdk/src/generated/routes.ts`), the Python route helpers
+(`sdk/python/hotcell/_routes.py`) and the generated API section of
+`docs/reference.md`. `npm run check:api` fails CI when a committed artifact is
+stale, so daemon/SDK drift is a build error rather than a runtime bug. Ergonomic
+wrappers (`Sandbox.exec`, …) stay hand-written on top of the generated layer.
+
 ### Density / Lightweight design (the core requirement)
 
 - One shared daemon, not per-sandbox sidecars. All metrics come from reading cgroup v2 files (`cpu.stat`, `memory.current`, `io.stat`) + veth counters — no per-sandbox Prometheus/agent process. cAdvisor-style collection in-process.
