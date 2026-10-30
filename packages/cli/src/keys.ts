@@ -5,16 +5,22 @@ import { HotcellClient } from "@hotcell/sdk";
 import { readConfigFile, writeConfigFile } from "./configfile.js";
 import {
   AUTH_PRESETS,
+  BUILTIN_ROUTE_TABLE,
   BUILTIN_ROUTES,
   ROUTED_ENV_VARS,
   type Disposition,
   type EnvManifest,
+  canonicalRouteName,
+  knownRoute,
+  loadShapes,
   manifestPath,
   readManifest,
   readValues,
+  routeStatuses,
   suggestRouteName,
   validateBaseUrl,
   writeManifest,
+  writeShape,
   writeValues,
 } from "./envconfig.js";
 import { storeKey, removeKey, loadKeys } from "./keystore.js";
@@ -135,7 +141,7 @@ async function shapePrompt(envName: string, manifest: EnvManifest): Promise<stri
   console.log(`  ${c.bold}${envName}${c.reset} ${dim("→ gateway")}`);
   const provider = (await textInput("route name", suggestRouteName(envName))).toLowerCase();
   if (!provider) return null;
-  if (BUILTIN_ROUTES.has(provider) || manifest.shapes[provider]) {
+  if (BUILTIN_ROUTES.has(provider) || knownRoute(provider, loadShapes(manifest))) {
     console.log(`  ${green("✓")} ${provider} ${dim("— route already known")}`);
     return provider;
   }
@@ -406,9 +412,9 @@ async function importNonInteractive(
     }
     if (state === "gateway") {
       const provider = prior?.provider ?? routed ?? "";
-      if (!provider || (!BUILTIN_ROUTES.has(provider) && !manifest.shapes[provider])) {
+      if (!provider || !knownRoute(provider, loadShapes(manifest))) {
         console.error(
-          `${red("✗")} ${v.envName}=gateway has no route — add a shape first (HOTCELL_PROVIDER_<NAME>_BASEURL) or run \`hotcell keys import\` on a terminal`,
+          `${red("✗")} ${v.envName}=gateway has no route — add one first (hotcell keys add <name> --base-url <url>) or run \`hotcell keys import\` on a terminal`,
         );
         return 1;
       }
@@ -512,18 +518,69 @@ export async function keysCommand(
   const sub = positional[0];
 
   if (sub === "add") {
-    const provider = (positional[1] ?? "").toLowerCase();
+    const provider = canonicalRouteName(positional[1] ?? "");
     if (!provider) {
-      console.error('Usage: hotcell keys add <provider> [--value <key>]   — any name (openrouter, stripe, cloudflare, …)');
+      console.error(
+        "Usage: hotcell keys add <provider> [--value <key> | --stdin] [--base-url <url> [--auth-header <h>] [--auth-format <f>]] [--keyless]\n" +
+          "       <provider> is any name; see `hotcell routes` for the built-ins.",
+      );
       return 1;
     }
+    const applyNote = (applied: "ok" | "auth" | "down") =>
+      applied === "ok"
+        ? dim("  applied live")
+        : applied === "auth"
+          ? dim("  (daemon rejected the API key — pass --api-key, or restart your shell to pick up the new one)")
+          : dim("  (start the daemon to use it: hotcell start)");
+
+    // --base-url registers (or repoints) the route's shape in the same command,
+    // so an installer needs no env var and no terminal to add a custom provider.
+    const baseUrlFlag = typeof flags["base-url"] === "string" ? flags["base-url"] : "";
+    const authHeaderFlag = typeof flags["auth-header"] === "string" ? flags["auth-header"].toLowerCase() : "";
+    const authFormatFlag = typeof flags["auth-format"] === "string" ? flags["auth-format"] : "";
+    if ((authHeaderFlag || authFormatFlag) && !baseUrlFlag) {
+      console.error(`${red("✗")} --auth-header/--auth-format need --base-url <url>`);
+      return 1;
+    }
+    if (baseUrlFlag) {
+      const checked = validateBaseUrl(baseUrlFlag);
+      if ("error" in checked) { console.error(`${red("✗")} ${checked.error}`); return 1; }
+      const authHeader = authHeaderFlag || "authorization";
+      const format = authFormatFlag || (authHeader === "authorization" ? "Bearer {key}" : "{key}");
+      if (!format.includes("{key}")) {
+        console.error(`${red("✗")} --auth-format must contain {key} (the real key's position), e.g. "Bearer {key}"`);
+        return 1;
+      }
+      writeShape(provider, { baseUrl: checked.url, authHeader, format });
+      console.log(`${green("✓")} route ${green(provider)}   ${dim(`· ${checked.url} · ${authHeader}: ${format}`)}`);
+    }
+
     let value =
       typeof flags.value === "string" ? flags.value
       : flags.stdin ? await readStdin()
       : "";
+
+    // Keyless routes (local runtimes such as ollama/lmstudio, or any shape added
+    // with --keyless): no key to store — enabling the route IS the action. The
+    // built-ins are inactive until this runs: they expose the host's loopback.
+    const shapes = loadShapes();
+    const keylessRoute = flags.keyless === true || (shapes[provider]?.keyless ?? BUILTIN_ROUTE_TABLE[provider]?.keyless ?? false);
+    if (!value && keylessRoute) {
+      if (!knownRoute(provider, shapes)) {
+        console.error(`${red("✗")} no route for "${provider}" — add --base-url <url> alongside --keyless`);
+        return 1;
+      }
+      writeShape(provider, { keyless: true });
+      const applied = await reload(globals);
+      const upstream = shapes[provider]?.baseUrl ?? BUILTIN_ROUTE_TABLE[provider]?.baseUrl ?? "";
+      console.log(`${green("✓")} ${green(provider)} enabled, keyless   ${dim(`· forwards to ${upstream} with no auth header`)}`);
+      console.log(applyNote(applied));
+      return 0;
+    }
+
     if (!value) {
       if (!process.stdin.isTTY) {
-        console.error("no key given — pass --value <key>, pipe with --stdin, or run in a terminal");
+        console.error("no key given — pass --value <key>, pipe with --stdin, add --keyless for a provider that needs none, or run in a terminal");
         return 1;
       }
       value = await promptHidden(dim(`paste ${provider} key (hidden): `));
@@ -534,7 +591,7 @@ export async function keysCommand(
     // now (on a terminal) rather than storing something that silently does
     // nothing — the failure mode this whole flow exists to remove.
     const manifest = readManifest();
-    if (!BUILTIN_ROUTES.has(provider) && !manifest.shapes[provider]) {
+    if (!knownRoute(provider, shapes)) {
       if (process.stdin.isTTY) {
         console.log(dim(`  no route for "${provider}" yet — two questions, asked once`));
         for (;;) {
@@ -555,7 +612,7 @@ export async function keysCommand(
         }
       } else {
         console.error(
-          `${red("✗")} no route for "${provider}" — set HOTCELL_PROVIDER_${provider.toUpperCase()}_BASEURL (and _AUTHHEADER/_FORMAT), or run this on a terminal`,
+          `${red("✗")} no route for "${provider}" — add --base-url <url> [--auth-header <h>] [--auth-format <f>], or run this on a terminal`,
         );
         return 1;
       }
@@ -564,32 +621,39 @@ export async function keysCommand(
     const source = storeKey(provider, value.trim());
     const applied = await reload(globals);
     console.log(`${green("✓")} stored ${green(provider)}   ${dim(`· ${source === "keychain" ? "macOS keychain" : "~/.hotcell/keys.json (chmod 600)"}`)}`);
-    console.log(
-      applied === "ok"
-        ? dim("  applied live")
-        : applied === "auth"
-          ? dim("  (daemon rejected the API key — pass --api-key, or restart your shell to pick up the new one)")
-          : dim("  (start the daemon to use it: hotcell start)"),
-    );
+    console.log(applyNote(applied));
     return 0;
   }
 
-  if (sub === "ls" || sub === "list") {
-    const keys = loadKeys();
-    const names = Object.keys(keys).sort();
+  if (sub === "ls" || sub === "list" || sub === "routes") {
+    // Every route the gateway knows — built-in or custom, live or waiting on a
+    // key — so an installer can check a provider is ready. Masked key values
+    // are the only secret-derived thing shown; --json carries none.
+    const routes = routeStatuses();
     const manifest = readManifest();
     const injected = Object.entries(manifest.vars).filter(([, d]) => d.disposition === "inject");
-    if (!names.length && !injected.length) {
-      console.log(dim("no provider keys yet — add one:  hotcell keys add openrouter"));
+    if (flags.json === true) {
+      console.log(JSON.stringify({ routes, injected: injected.map(([n]) => n) }, null, 2));
       return 0;
     }
-    if (names.length) {
-      const w = Math.max(8, ...names.map((n) => n.length));
-      console.log(`${dim("PROVIDER".padEnd(w))}  ${dim("KEY".padEnd(12))}  ${dim("SOURCE")}`);
-      for (const n of names) {
-        const { value, source } = keys[n];
-        console.log(`${n.padEnd(w)}  ${mask(value).padEnd(12)}  ${dim(source)}`);
-      }
+    const keys = loadKeys();
+    const w = Math.max(8, ...routes.map((r) => r.name.length + (r.builtin ? 0 : " (custom)".length)));
+    const uw = Math.max(13, ...routes.map((r) => (r.baseUrl ?? "").length));
+    console.log(`${dim("ROUTE".padEnd(w))}  ${dim("UPSTREAM".padEnd(uw))}  ${dim("KEY".padEnd(12))}  ${dim("SOURCE".padEnd(8))}  ${dim("ACTIVE")}`);
+    for (const r of routes) {
+      const key = keys[r.name] ?? keys[r.name.replace(/-/g, "_")];
+      const keyCol = key
+        ? `${mask(key.value).padEnd(12)}  ${dim(key.source.padEnd(8))}`
+        : dim((r.keyless || r.keyOptional ? "none needed" : "—").padEnd(12) + "  " + "".padEnd(8));
+      const active = r.active
+        ? green(r.keyless && !r.hasKey ? "yes (keyless)" : "yes")
+        : dim(`no — ${r.inactiveReason ?? "inactive"}`);
+      const name = r.builtin ? r.name.padEnd(w) : `${r.name} (custom)`.padEnd(w);
+      console.log(`${name}  ${(r.baseUrl ?? "(no base URL)").padEnd(uw)}  ${keyCol}  ${active}`);
+    }
+    if (!routes.some((r) => r.hasKey)) {
+      console.log("");
+      console.log(dim("no provider keys yet — add one:  hotcell keys add openrouter   (or: hotcell keys add ollama, keyless)"));
     }
     // Injected values are not provider keys, but they DO enter sandboxes — the
     // one thing a key listing must never hide.

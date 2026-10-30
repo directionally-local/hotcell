@@ -1,6 +1,16 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { HOME } from "./configfile.js";
+import {
+  BUILTIN_ROUTES as BUILTIN_ROUTE_TABLE,
+  canonicalRouteName,
+  resolveRoutes,
+  type ResolvedRoute,
+  type RouteOverride,
+} from "@hotcell/daemon/dist/proxy/routes.js";
+import { HOME, readConfigFile, writeConfigFile } from "./configfile.js";
+import { loadKeys, type KeySource } from "./keystore.js";
+
+export { BUILTIN_ROUTE_TABLE, canonicalRouteName };
 
 /**
  * Where an imported environment goes, and what hotcell is allowed to do with it.
@@ -171,17 +181,123 @@ export const ROUTED_ENV_VARS: Record<string, string> = {
   OPENAI_API_KEY: "openai",
   ANTHROPIC_API_KEY: "anthropic",
   OPENROUTER_API_KEY: "openrouter",
+  REQUESTY_API_KEY: "requesty",
   GOOGLE_API_KEY: "google",
   GEMINI_API_KEY: "gemini",
+  DEEPSEEK_API_KEY: "deepseek",
+  MOONSHOT_API_KEY: "moonshot",
+  KIMI_API_KEY: "kimi-code",
+  MINIMAX_API_KEY: "minimax",
+  XAI_API_KEY: "xai",
+  MISTRAL_API_KEY: "mistral",
+  GROQ_API_KEY: "groq",
+  CEREBRAS_API_KEY: "cerebras",
+  TOGETHER_API_KEY: "together",
+  FIREWORKS_API_KEY: "fireworks",
+  DEEPINFRA_API_KEY: "deepinfra",
+  AI_GATEWAY_API_KEY: "vercel",
+  ZAI_API_KEY: "zai",
+  OLLAMA_API_KEY: "ollama",
+  LMSTUDIO_API_KEY: "lmstudio",
   GITHUB_API_KEY: "github",
 };
 
 /**
- * Routes the daemon already knows how to reach (`PROVIDER_DEFAULTS` in
- * `daemon/src/proxy/egress.ts`, plus the keyless `github` route). A key for one
- * of these needs no shape; anything else does.
+ * Routes the daemon already knows how to reach: the built-in table in
+ * `daemon/src/proxy/routes.ts` (LLM providers, the keyless local runtimes, and
+ * `github`). A key for one of these needs no shape; anything else does.
  */
-export const BUILTIN_ROUTES = new Set(["openai", "anthropic", "openrouter", "google", "gemini", "github"]);
+export const BUILTIN_ROUTES = new Set(Object.keys(BUILTIN_ROUTE_TABLE));
+
+/** `kimi-code` → `KIMI_CODE`: the env-var spelling of a route name. */
+export function envRouteName(provider: string): string {
+  return provider.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+}
+
+/**
+ * Operator route shapes as the daemon sees them: `HOTCELL_PROVIDER_<NAME>_*`
+ * from the persisted config (`~/.hotcell/config.json`) overridden by env (same
+ * precedence as the daemon's `loadProviderConfigs`), with the project
+ * manifest's shapes as the fallback for routes not yet synced to the daemon.
+ */
+export function loadShapes(manifest: EnvManifest = readManifest()): Record<string, RouteOverride> {
+  const out: Record<string, RouteOverride> = {};
+  for (const [provider, shape] of Object.entries(manifest.shapes)) {
+    out[provider.toLowerCase()] = { baseUrl: shape.baseUrl, authHeader: shape.authHeader, formatTemplate: shape.format };
+  }
+  for (const source of [readConfigFile(), process.env as Record<string, string | undefined>]) {
+    for (const prefix of ["SBX_PROVIDER_", "HOTCELL_PROVIDER_"]) {
+      for (const [name, value] of Object.entries(source)) {
+        if (!name.startsWith(prefix) || !value) continue;
+        if (name.startsWith(`${prefix}KEY_`)) continue;
+        const rest = name.slice(prefix.length);
+        const us = rest.lastIndexOf("_");
+        if (us <= 0) continue;
+        const provider = canonicalRouteName(rest.slice(0, us));
+        const field = rest.slice(us + 1).toUpperCase();
+        const cfg = (out[provider] ??= {});
+        if (field === "BASEURL") cfg.baseUrl = value;
+        else if (field === "AUTHHEADER") cfg.authHeader = value.toLowerCase();
+        else if (field === "FORMAT") cfg.formatTemplate = value;
+        else if (field === "KEYLESS") cfg.keyless = /^(1|true|yes)$/i.test(value.trim());
+      }
+    }
+  }
+  return out;
+}
+
+/** Whether the gateway has (or will have, once a key arrives) a way to reach `provider`. */
+export function knownRoute(provider: string, shapes: Record<string, RouteOverride> = loadShapes()): boolean {
+  const name = canonicalRouteName(provider);
+  return BUILTIN_ROUTES.has(name) || Boolean(shapes[name]?.baseUrl);
+}
+
+/**
+ * Persist a route shape where the daemon reads it (`~/.hotcell/config.json` as
+ * `HOTCELL_PROVIDER_<NAME>_*`); `keyless` marks a route live with no key.
+ * Applied on the daemon's next hot-reload (`POST /reload-keys`).
+ */
+export function writeShape(provider: string, shape: Partial<Shape> & { keyless?: boolean }): void {
+  const cfg = readConfigFile();
+  const name = envRouteName(provider);
+  if (shape.baseUrl !== undefined) cfg[`HOTCELL_PROVIDER_${name}_BASEURL`] = shape.baseUrl;
+  if (shape.authHeader !== undefined) cfg[`HOTCELL_PROVIDER_${name}_AUTHHEADER`] = shape.authHeader;
+  if (shape.format !== undefined) cfg[`HOTCELL_PROVIDER_${name}_FORMAT`] = shape.format;
+  if (shape.keyless !== undefined) cfg[`HOTCELL_PROVIDER_${name}_KEYLESS`] = shape.keyless ? "true" : "false";
+  writeConfigFile(cfg);
+}
+
+/** A route's state as `hotcell keys ls` / `hotcell routes` report it (no secret values). */
+export interface RouteStatus extends Omit<ResolvedRoute, "apiKey"> {
+  /** Where the key came from, when there is one. */
+  keySource?: KeySource;
+  /** The path a sandbox points its SDK at, relative to the gateway: `/<name><sdkBasePath>`. */
+  gatewayPath: string;
+}
+
+/**
+ * Every route — built-in, operator-defined, or a stored key with no route —
+ * resolved the way the daemon resolves them, from the same keystore and shapes.
+ * Works with the daemon down, so an installer can check readiness before start.
+ */
+export function routeStatuses(): RouteStatus[] {
+  const keys = loadKeys();
+  const keyMap: Record<string, string> = {};
+  const sourceFor: Record<string, KeySource> = {};
+  for (const [name, { value, source }] of Object.entries(keys)) {
+    const canonical = canonicalRouteName(name);
+    keyMap[canonical] = value;
+    sourceFor[canonical] = source;
+  }
+  const resolved = resolveRoutes(keyMap, loadShapes());
+  return Object.values(resolved)
+    .map(({ apiKey: _key, ...route }): RouteStatus => ({
+      ...route,
+      ...(route.hasKey && sourceFor[route.name] ? { keySource: sourceFor[route.name] } : {}),
+      gatewayPath: `/${route.name}${route.sdkBasePath ?? ""}`,
+    }))
+    .sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
+}
 
 /** Common auth shapes, offered as presets so the usual case is one keypress. */
 export const AUTH_PRESETS: { label: string; authHeader: string; format: string }[] = [

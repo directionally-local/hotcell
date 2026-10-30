@@ -130,6 +130,9 @@ export async function cli(args: string[]): Promise<number> {
       return engineStatus(globals);
     case "keys":
       return keysCommand(positional, globals, flags);
+    // `hotcell routes [--json]`: the route list (same as `hotcell keys ls`).
+    case "routes":
+      return keysCommand(["routes", ...positional], globals, flags);
     case "stop":
       // No args stops the daemon; `hotcell stop <id>` stops a sandbox.
       return positional.length === 0 ? stopEngine(globals) : stopCommand(positional, globals);
@@ -214,9 +217,17 @@ Commands:
 
   hotcell keys add <provider> [--value <key>]  ·  keys import [.env]  ·  keys review  ·  keys ls  ·  keys rm <provider>
     Store API keys on the host (macOS keychain, else chmod-600 ~/.hotcell/keys.json)
-    — never inside a sandbox. <provider> is any name; openai/anthropic/openrouter/
-    google/github route out of the box, and any other provider once you give its
-    base URL + auth header (asked once, saved to .hotcell/env.json).
+    — never inside a sandbox. <provider> is any name; openai, anthropic, openrouter,
+    gemini/google, deepseek, moonshot, kimi-code, minimax, xai, mistral, groq,
+    cerebras, together, fireworks, deepinfra, vercel, zai, zai-coding, requesty
+    and github route out of the box ('hotcell routes' lists them). The local
+    runtimes ollama/lmstudio need no key but are off until you enable them:
+    'hotcell keys add ollama' (they expose the host's loopback to sandboxes).
+    Any other provider routes once you give its base URL + auth header:
+    --base-url <url> [--auth-header <h>] [--auth-format <f>] (or asked once on a
+    terminal). --keyless marks a custom route live with no key.
+  hotcell routes [--json]  (= keys ls)
+    Every built-in and custom route, whether it has a key, and whether it is active.
     import reads a .env and asks you to set every variable to one of:
       gateway  key stays here; the sandbox gets a per-sandbox token
       inject   the real value is copied into every sandbox
