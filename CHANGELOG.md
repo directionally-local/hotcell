@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.38](https://github.com/directionally-local/hotcell/compare/v0.1.37...v0.1.38) (2026-10-30)
+
+
+### Features
+
+* **egress:** built-in routes for every Autopilot provider, opt-in keyless local routes, pricing fallbacks ([#63](https://github.com/directionally-local/hotcell/issues/63)) ([dc23bb5](https://github.com/directionally-local/hotcell/commit/dc23bb5d630c86e0f29aa3766854cc755882826d))
+
 ## [0.1.37](https://github.com/directionally-local/hotcell/compare/v0.1.36...v0.1.37) (2026-10-29)
 
 
