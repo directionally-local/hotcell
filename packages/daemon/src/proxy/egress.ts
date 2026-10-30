@@ -3,13 +3,14 @@ import { connect as netConnect, type Socket } from "node:net";
 import type { Config } from "../config.js";
 import { audit } from "../audit.js";
 import { log } from "../logger.js";
-import { computeModelCost, priceFor, type ModelPrice, type ModelPrices } from "../pricing.js";
+import { computeModelCost, FREE_PRICE, priceFor, unpricedMessage, type ModelPrice, type ModelPrices } from "../pricing.js";
 import type { SandboxStore } from "../store.js";
 import type { EgressTokenRecord } from "../types.js";
 import { startSpan } from "../tracing.js";
 import { BodyTooLargeError, readBodyCapped, sendJson, sendText } from "../util.js";
 import { Allowlist, loadAllowlist, normalizeHost } from "./allowlist.js";
 import { RateLimiter } from "./ratelimit.js";
+import { BUILTIN_ROUTES, renderAuth, resolveRoutes, type ResolvedRoute } from "./routes.js";
 
 /**
  * Egress credential proxy — an LLM gateway, not a TLS-MITM forward proxy.
@@ -39,104 +40,63 @@ export interface ResolvedProvider {
   authHeader: string;
   /** Render the auth header value from the real key (e.g. `Bearer ${k}`). */
   format: (key: string) => string;
-  /** The real provider key, injected on every forwarded call. */
-  apiKey: string;
+  /** Alternative auth shape for paths matching `pathPattern` (Gemini's OpenAI-compatible surface takes a Bearer token). */
+  pathAuth?: { pathPattern: RegExp; authHeader: string; format: (key: string) => string };
+  /** The real provider key, injected on every forwarded call; absent on a keyless route with no key. */
+  apiKey?: string;
+  /** Enabled to run without a key (local runtimes): forwarded with no auth header, priced at $0. */
+  keyless?: boolean;
+  /** Not an LLM API (GitHub): never priced, reserved or body-rewritten. */
+  nonLlm?: boolean;
 }
 
 /**
- * Built-in providers: base URL + auth header shape, keyed by lower-case name.
- * Providers with a fixed public base URL live here; ones whose base URL is
- * deployment-specific (Azure OpenAI, a Cloudflare AI Gateway prefix, a self-hosted
- * endpoint) are added by the operator as **custom providers** via
- * `SBX_PROVIDER_<NAME>_BASEURL` / `_AUTHHEADER` / `_FORMAT` + `SBX_PROVIDER_KEY_<NAME>`.
- *
- * Cloudflare AI Gateway is just a base-URL prefix in front of a real provider, so
- * it needs no special mechanism — point a custom provider's base URL at it and
- * reuse the upstream's auth shape, e.g.:
- *   SBX_PROVIDER_CFOPENAI_BASEURL=https://gateway.ai.cloudflare.com/v1/<acct>/<gw>/openai
- *   SBX_PROVIDER_CFOPENAI_AUTHHEADER=authorization
- *   SBX_PROVIDER_CFOPENAI_FORMAT="Bearer {key}"
- *   SBX_PROVIDER_KEY_CFOPENAI=<the OpenAI key>
+ * Build the provider registry from the built-in route table (`routes.ts`), the
+ * operator's shapes (`HOTCELL_PROVIDER_<NAME>_*` / `hotcell keys add --base-url`)
+ * and the stored keys. A route is live when it has a base URL and either a key
+ * (plus a header to send it in) or was explicitly enabled as keyless (local
+ * runtimes such as Ollama: `hotcell keys add ollama`).
+ * Custom config fields override the built-in, so an operator can repoint a
+ * built-in (e.g. route `openai` through a Cloudflare AI Gateway prefix) without
+ * code:
+ *   HOTCELL_PROVIDER_CFOPENAI_BASEURL=https://gateway.ai.cloudflare.com/v1/<acct>/<gw>/openai
+ *   HOTCELL_PROVIDER_CFOPENAI_AUTHHEADER=authorization
+ *   HOTCELL_PROVIDER_CFOPENAI_FORMAT="Bearer {key}"
+ *   HOTCELL_PROVIDER_KEY_CFOPENAI=<the OpenAI key>
  * The sandbox then calls `http://<egress>/cfopenai/...` and the gateway injects the
  * key + meters the call, same as any built-in.
  */
-const PROVIDER_DEFAULTS: Record<string, Omit<ResolvedProvider, "apiKey">> = {
-  openai: {
-    baseUrl: "https://api.openai.com",
-    sdkBasePath: "/v1",
-    authHeader: "authorization",
-    format: (k) => `Bearer ${k}`,
-  },
-  anthropic: {
-    baseUrl: "https://api.anthropic.com",
-    authHeader: "x-api-key",
-    format: (k) => k,
-  },
-  openrouter: {
-    baseUrl: "https://openrouter.ai/api",
-    sdkBasePath: "/v1",
-    authHeader: "authorization",
-    format: (k) => `Bearer ${k}`,
-  },
-  google: {
-    baseUrl: "https://generativelanguage.googleapis.com",
-    authHeader: "x-goog-api-key",
-    format: (k) => k,
-  },
-  // Alias of `google` so either provider name works in the route + key env.
-  gemini: {
-    baseUrl: "https://generativelanguage.googleapis.com",
-    authHeader: "x-goog-api-key",
-    format: (k) => k,
-  },
-};
-
-/**
- * Build the provider registry from configured keys. A provider exists only when a
- * key (`SBX_PROVIDER_KEY_<NAME>`) is set AND a shape is known — either a built-in
- * default or an operator-supplied `providerConfigs` entry. Custom config fields
- * override the built-in, so an operator can repoint a built-in (e.g. route
- * `openai` through a Cloudflare AI Gateway prefix) without code.
- */
 export function buildProviders(config: Config): Record<string, ResolvedProvider> {
   const providers: Record<string, ResolvedProvider> = {};
-  for (const [name, apiKey] of Object.entries(config.providerKeys)) {
-    if (!apiKey) continue;
-    const def: Omit<ResolvedProvider, "apiKey"> | undefined = PROVIDER_DEFAULTS[name];
-    const custom = config.providerConfigs[name];
-    const baseUrl = custom?.baseUrl ?? def?.baseUrl;
-    const authHeader = custom?.authHeader ?? def?.authHeader;
-    let format: ((k: string) => string) | undefined = def?.format;
-    if (custom?.formatTemplate) {
-      const tmpl = custom.formatTemplate;
-      format = (k) => tmpl.replace("{key}", k);
-    } else if (format === undefined && custom) {
-      // Custom provider without a format template → send the raw key.
-      format = (k) => k;
-    }
-    if (baseUrl && authHeader && format !== undefined) {
-      // Only advertise the SDK path when the provider still points at its
-      // built-in base URL: an operator override carries its own path convention.
-      const sdkBasePath = custom?.baseUrl === undefined ? def?.sdkBasePath : undefined;
-      providers[name] = { baseUrl, authHeader, format, apiKey, ...(sdkBasePath ? { sdkBasePath } : {}) };
-    }
-  }
-  // GitHub as a keyless provider: a sandbox reaches api.github.com through the
-  // gateway with its egress token, and the real GitHub token (from `hotcell keys
-  // add github`, e.g. `gh auth token`) stays on the host — same as an LLM key.
-  // `github-git` (git push to github.com) is derived from the same key in handle().
-  // Defined here (not in PROVIDER_DEFAULTS) so api.github.com only joins the
-  // direct-egress deny set when github egress is actually configured.
-  const githubKey = config.providerKeys.github;
-  if (githubKey) {
-    providers.github = {
-      baseUrl: "https://api.github.com",
-      authHeader: "authorization",
-      format: (k) => `Bearer ${k}`,
-      apiKey: githubKey,
+  for (const route of Object.values(resolveRoutes(config.providerKeys ?? {}, config.providerConfigs ?? {}))) {
+    if (!route.active || !route.baseUrl) continue;
+    const tmpl = route.formatTemplate ?? "{key}";
+    const p: ResolvedProvider = {
+      baseUrl: route.baseUrl,
+      authHeader: route.authHeader ?? "authorization",
+      format: (k) => renderAuth(tmpl, k),
     };
+    if (route.apiKey !== undefined) p.apiKey = route.apiKey;
+    if (route.keyless) p.keyless = true;
+    if (route.nonLlm) p.nonLlm = true;
+    if (route.sdkBasePath) p.sdkBasePath = route.sdkBasePath;
+    if (route.pathAuth) {
+      const alt = route.pathAuth;
+      p.pathAuth = { pathPattern: new RegExp(alt.pathPattern), authHeader: alt.authHeader, format: (k) => renderAuth(alt.format, k) };
+    }
+    providers[route.name] = p;
   }
   return providers;
+}
+
+/**
+ * Every route the gateway knows — built-in or operator-defined, live or not —
+ * with the real key stripped. Backs `hotcell keys ls` / `hotcell routes`.
+ */
+export function listRoutes(config: Config): ResolvedRoute[] {
+  return Object.values(resolveRoutes(config.providerKeys ?? {}, config.providerConfigs ?? {})).map(
+    ({ apiKey: _key, ...route }) => route,
+  );
 }
 
 interface Deps {
@@ -162,7 +122,10 @@ interface ResolvedDeps extends Deps {
 }
 
 /** The egress proxy plus a hot-reload hook for provider keys (see `hotcell keys`). */
-export type EgressServer = Server & { reloadProviders: (p: Record<string, ResolvedProvider>) => void };
+export type EgressServer = Server & {
+  /** Live-swap the provider registry, and optionally the model price table (`HOTCELL_MODEL_PRICES` re-read). */
+  reloadProviders: (p: Record<string, ResolvedProvider>, prices?: ModelPrices) => void;
+};
 
 export function createEgressProxy(deps: Deps): EgressServer {
   const resolved: ResolvedDeps = {
@@ -192,9 +155,10 @@ export function createEgressProxy(deps: Deps): EgressServer {
   // Live-swap provider keys (the handlers read `resolved` by reference), so
   // `hotcell keys add/rm` applies without restarting the daemon.
   const egress = server as EgressServer;
-  egress.reloadProviders = (providers) => {
+  egress.reloadProviders = (providers, prices) => {
     resolved.providers = providers;
     resolved.providerHosts = computeProviderHosts(providers);
+    if (prices) resolved.prices = prices;
   };
   return egress;
 }
@@ -216,8 +180,10 @@ function computeProviderHosts(providers: Record<string, ResolvedProvider>): Set<
       /* ignore malformed */
     }
   };
-  for (const def of Object.values(PROVIDER_DEFAULTS)) add(def.baseUrl);
-  for (const p of Object.values(providers)) add(p.baseUrl);
+  // Keyless local runtimes carry no key to protect, so a direct tunnel to them is
+  // not a bypass; GitHub only joins when its key is configured (via `providers`).
+  for (const def of Object.values(BUILTIN_ROUTES)) if (!def.nonLlm && !def.keyless) add(def.baseUrl);
+  for (const p of Object.values(providers)) if (!(p.keyless && p.apiKey === undefined)) add(p.baseUrl);
   return hosts;
 }
 
@@ -286,6 +252,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
       authHeader: "authorization",
       format: (k) => "Basic " + Buffer.from(`x-access-token:${k}`).toString("base64"),
       apiKey: providers.github.apiKey,
+      nonLlm: true,
     };
   }
   if (!provider) return sendText(res, 404, `unknown provider: ${providerName}`);
@@ -355,7 +322,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
   // Uncapped calls are forwarded byte-for-byte as before.
   const prices = deps.prices ?? {};
   const capped =
-    !NON_LLM_PROVIDERS.has(providerName) &&
+    !provider.nonLlm &&
     (policy.spendCapUsd !== undefined || Boolean(sb?.egressSpendCapUsd));
   let fwdBody = reqBody;
   let reserveUsd = 0;
@@ -376,14 +343,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ResolvedD
       if (changed) fwdBody = Buffer.from(JSON.stringify(bodyObj));
     }
     if (reqModel && !isFreeRoute(rest, pathRoute?.method)) {
-      const price = priceFor(reqModel, prices);
+      // Table lookup tries `<provider>/<model>`, the model, and its basename; a
+      // keyless local runtime (Ollama, LM Studio) bills nothing, so an unpriced
+      // model there is $0 rather than refused.
+      const price = priceFor(reqModel, prices, providerName) ?? (provider.keyless ? FREE_PRICE : undefined);
       if (!isValidPrice(price)) {
         audit({ event: "gateway.policy.rejected", sandboxId, driver: sb?.driver ?? undefined, attributes: { "token.raw": token, provider: providerName, model: reqModel.slice(0, 128), reason: "unpriced_model", status: 403 } });
-        return sendText(
-          res,
-          403,
-          `model not priced: ${reqModel} — a spend cap applies, so the gateway can only forward models with a known price (add it via HOTCELL_MODEL_PRICES)`,
-        );
+        return sendText(res, 403, unpricedMessage(reqModel, providerName, deps.config.modelPricesPath));
       }
       // Worst case: every request-body byte is an input token (a byte-level BPE
       // token is ≥1 byte of text, so this bounds text input) + the bounded output.
@@ -500,7 +466,14 @@ async function forwardAndMeter(
     if (HOP_REQUEST.has(k.toLowerCase()) || v == null) continue;
     headers.set(k, Array.isArray(v) ? v.join(", ") : v);
   }
-  headers.set(provider.authHeader, provider.format(provider.apiKey));
+  // Inject the real key. A keyless route with no key is forwarded with no auth
+  // header at all (the sandbox's token was stripped above). A path-conditional
+  // shape (Gemini's OpenAI-compatible surface takes a Bearer token where the
+  // native API takes x-goog-api-key) wins for matching paths.
+  if (provider.apiKey !== undefined) {
+    const alt = provider.pathAuth?.pathPattern.test(call.rest) ? provider.pathAuth : undefined;
+    headers.set(alt?.authHeader ?? provider.authHeader, (alt?.format ?? provider.format)(provider.apiKey));
+  }
 
   let bytes = call.body?.length ?? 0;
 
@@ -576,9 +549,17 @@ async function forwardAndMeter(
     cost = usage.cost;
     priced = true;
   } else {
-    const pricedModel = [usage.model, reqModel].find((m) => m !== undefined && isValidPrice(priceFor(m, prices)));
+    const pricedModel = [usage.model, reqModel].find((m) => m !== undefined && isValidPrice(priceFor(m, prices, providerName)));
     priced = pricedModel !== undefined;
-    cost = computeModelCost(pricedModel ?? model, tokensIn, tokensOut, prices);
+    if (pricedModel !== undefined) {
+      cost = computeModelCost(pricedModel, tokensIn, tokensOut, prices, providerName);
+    } else if (provider.keyless) {
+      // A local runtime bills nothing: an unpriced model there is $0 by design, not a gap.
+      cost = 0;
+      priced = true;
+    } else {
+      cost = computeModelCost(model, tokensIn, tokensOut, prices, providerName);
+    }
   }
   if (!Number.isFinite(cost) || cost < 0) cost = 0;
   // Under a cap, an admitted call is never free just because its usage couldn't
@@ -651,9 +632,6 @@ export const EGRESS_OUTPUT_TOKEN_CEILING = 128_000;
 
 /** Float slack for cap comparisons (an exactly-fitting reservation is admitted). */
 const SPEND_EPSILON = 1e-9;
-
-/** Gateway providers that aren't LLMs: never priced, reserved or rewritten. */
-const NON_LLM_PROVIDERS = new Set(["github", "github-git"]);
 
 const CHAT_COMPLETIONS = /(?:^|\/)chat\/completions\/?$/;
 

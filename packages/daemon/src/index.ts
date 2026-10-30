@@ -126,7 +126,9 @@ async function main(): Promise<void> {
     // header alongside the key, and a route needs both to exist.
     config.providerConfigs = loadProviderConfigs();
     const rebuilt = buildProviders(config);
-    egress?.reloadProviders(rebuilt);
+    // And prices: the "model not priced" refusal tells the operator to edit the
+    // price file and reload, so the reload must pick that file up.
+    egress?.reloadProviders(rebuilt, loadModelPrices(config.modelPricesPath));
     log.info("provider keys reloaded", { providers: Object.keys(rebuilt).length });
     return { providers: Object.keys(rebuilt).length };
   };

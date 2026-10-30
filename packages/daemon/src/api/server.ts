@@ -292,6 +292,9 @@ export function egressConfig(config: Config, advertiseHost?: string) {
     openrouter: { baseUrlEnv: "OPENROUTER_BASE_URL", keyEnv: "OPENROUTER_API_KEY" },
     google: { baseUrlEnv: "GOOGLE_BASE_URL", keyEnv: "GOOGLE_API_KEY" },
     gemini: { baseUrlEnv: "GEMINI_BASE_URL", keyEnv: "GEMINI_API_KEY" },
+    // Routes whose conventional key env doesn't follow `<NAME>_API_KEY`.
+    vercel: { baseUrlEnv: "AI_GATEWAY_BASE_URL", keyEnv: "AI_GATEWAY_API_KEY" },
+    "kimi-code": { baseUrlEnv: "KIMI_BASE_URL", keyEnv: "KIMI_API_KEY" },
   };
   // For custom/operator-defined providers, synthesize conventional env names
   // (`<NAME>_BASE_URL` / `<NAME>_API_KEY`) so auto-wiring still injects something

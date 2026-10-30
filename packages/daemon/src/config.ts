@@ -354,6 +354,12 @@ export interface ProviderConfig {
   authHeader?: string;
   /** Auth-header value template; `{key}` is replaced with the real key (e.g. `Bearer {key}`). */
   formatTemplate?: string;
+  /**
+   * Active with no key (`HOTCELL_PROVIDER_<NAME>_KEYLESS=true`): the gateway
+   * forwards without an auth header. Required to enable the keyless built-ins
+   * (ollama, lmstudio); `hotcell keys add ollama` writes it.
+   */
+  keyless?: boolean;
 }
 
 export function loadConfig(): Config {
@@ -398,7 +404,9 @@ export function loadConfig(): Config {
     costCpuPerHour: Number(env("COST_CPU_PER_HOUR") ?? 0.05),
     costMemGbPerHour: Number(env("COST_MEM_GB_PER_HOUR") ?? 0.005),
     costEgressPerGb: Number(env("COST_EGRESS_PER_GB") ?? 0.01),
-    modelPricesPath: env("MODEL_PRICES") ?? "",
+    // Default file is optional: when absent the built-in table applies, and the
+    // gateway's "model not priced" refusal names this exact path to add it to.
+    modelPricesPath: env("MODEL_PRICES") ?? join(stateRoot(), "model-prices.json"),
     vzHelperPath: env("VZ_HELPER_PATH") ?? repoAsset("helpers/hotcell-vz/dist/hotcell-vz"),
     vzKernel: env("VZ_KERNEL") ?? repoAsset("helpers/hotcell-vz/guest/vmlinux-vz"),
     vzRootfs: env("VZ_ROOTFS") ?? repoAsset("helpers/hotcell-vz/guest/rootfs.img"),
@@ -472,6 +480,7 @@ export function loadProviderConfigs(): Record<string, ProviderConfig> {
       if (field === "BASEURL") cfg.baseUrl = value;
       else if (field === "AUTHHEADER") cfg.authHeader = value.toLowerCase();
       else if (field === "FORMAT") cfg.formatTemplate = value;
+      else if (field === "KEYLESS") cfg.keyless = /^(1|true|yes)$/i.test(value.trim());
     }
   }
   }
