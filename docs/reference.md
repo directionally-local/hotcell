@@ -35,6 +35,8 @@ hotcell create [-i] [-n N] [--name HANDLE] [--image I] [--driver container|firec
                                              # shows live per-sandbox progress; Ctrl-C leaves provisioning running (see hotcell ls)
 hotcell create --workspace-dir DIR [--network NET[,NET…]]   # container driver: DIR (under HOTCELL_WORKSPACE_ROOTS) is /workspace;
                                              # NETs (labelled hotcell.attachable=true) replace the default bridge
+hotcell create --workspace-dir DIR --user UID:GID   # container driver: run as that numeric uid:gid (e.g. DIR's owner)
+hotcell create --workspace-dir DIR --home-dir HOME  # container driver: HOME (under HOTCELL_HOME_ROOTS) is /home/agent
 hotcell exec <id> "<cmd>" [--session SID] [--cwd DIR] [--env K=V,…]
 hotcell ls | stats <id> | stop <id> | start <id> | rm <id> | capacity | info
 hotcell terminal <id>                        # interactive shell inside a sandbox (attach)
@@ -96,6 +98,7 @@ Set these before `hotcell start` (they're inherited by the daemon) or on `hotcel
 | `HOTCELL_EGRESS_ENFORCE` | `false` | **Default-deny egress** (Linux): lock sandboxes to the gateway + DNS via host iptables. Needs `CAP_NET_ADMIN`. Advisory on macOS |
 | `HOTCELL_EGRESS_NETWORK` / `HOTCELL_EGRESS_SUBNET` | `hotcell-egress` / `10.200.0.0/24` | Bridge name / subnet for enforced egress |
 | `HOTCELL_WORKSPACE_ROOTS` | *(empty: off)* | Comma-separated absolute host directories a container sandbox may bind-mount as `/workspace` (`create --workspace-dir`, API `workspaceDir`): each directory and anything below it, symlinks resolved. Checked at create and again at every start |
+| `HOTCELL_HOME_ROOTS` | *(empty: off)* | Comma-separated absolute host directories a container sandbox with a host workspace may bind-mount at `/home/agent` (`create --home-dir`, API `homeDir`): each directory and anything below it, symlinks resolved, never inside or around the workspace. Checked at create and again at every start |
 | `HOTCELL_EGRESS_DNS` | embedded | Pinned DNS resolver IP under enforcement (blocks DNS exfil; DoH is denied by the allowlist) |
 | `HOTCELL_ALLOWLIST_FILE` / `HOTCELL_ALLOWLIST_EXTRA` / `HOTCELL_ALLOW_SOURCE_CONTROL` | defaults / — / `true` | Forward-proxy host allowlist: full override file / extra hosts / include the git-forge tier |
 | `HOTCELL_EGRESS_HOST` / `HOTCELL_EGRESS_ADVERTISE_HOST` | `127.0.0.1` / `host.docker.internal` | Gateway bind address / host advertised in egress base URLs |

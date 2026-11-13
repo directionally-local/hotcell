@@ -172,6 +172,12 @@ export interface Config {
    */
   workspaceRoots: string[];
   /**
+   * Host directories a container sandbox may mount as its home, `/home/agent` (create
+   * option `homeDir`, with a `workspaceDir`): the directories themselves and anything
+   * below. Empty (the default) = off. `HOTCELL_HOME_ROOTS`, comma-separated absolute paths.
+   */
+  homeRoots: string[];
+  /**
    * IPv4 subnet (CIDR) for the egress-enforced bridge network. The host firewall
    * scopes its allow/deny rules to this subnet, and the bridge gateway (`.1`) is the
    * sandbox's route to the egress gateway. `/24` assumed. `HOTCELL_EGRESS_SUBNET`.
@@ -393,6 +399,7 @@ export function loadConfig(): Config {
     egressEnforce: env("EGRESS_ENFORCE") === "true",
     egressNetwork: env("EGRESS_NETWORK") ?? "hotcell-egress",
     workspaceRoots: parseWorkspaceRoots(env("WORKSPACE_ROOTS")),
+    homeRoots: parseWorkspaceRoots(env("HOME_ROOTS")),
     egressSubnet: env("EGRESS_SUBNET") ?? "10.200.0.0/24",
     egressDnsResolver: env("EGRESS_DNS") ?? "",
     allowlistFile: env("ALLOWLIST_FILE") ?? "",
