@@ -1096,6 +1096,7 @@ async function createSandbox(
   const hostAccess = checkHostAccess(body, {
     driver: driverName,
     workspaceRoots: config.workspaceRoots,
+    homeRoots: config.homeRoots,
     egressEnforce: config.egressEnforce,
     template: !!template,
   });

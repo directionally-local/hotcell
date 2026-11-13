@@ -195,7 +195,7 @@ Commands:
   hotcell create [-i] [-n <count>] [--name <handle>] [--image I] [--driver container|firecracker|applevz] [--env K=V,…]
             [--sleep-after MS] [--egress] [--label K=V,…] [--template <name>]
             [--repo <git-url>] [--ref <branch>] [--patch <file>] [--branch <name>] [--setup "cmd"] [--autopilot] [--opencode]
-            [--memory <MB>] [--cpus <n>] [--pids <n>] [--workspace-dir <dir>] [--network <name>[,<name>…]] [--user <uid>:<gid>]
+            [--memory <MB>] [--cpus <n>] [--pids <n>] [--workspace-dir <dir>] [--network <name>[,<name>…]] [--user <uid>:<gid>] [--home-dir <dir>]
     Provision a standalone persistent sandbox and print its id.
     --workspace-dir bind-mounts that host directory as /workspace (container driver;
     the daemon must list it, or a parent, in HOTCELL_WORKSPACE_ROOTS).
@@ -203,6 +203,8 @@ Commands:
     be labelled hotcell.attachable=true; not under HOTCELL_EGRESS_ENFORCE).
     --user runs the sandbox as that numeric uid:gid (with --workspace-dir; e.g. the
     directory's owner, so the files it writes are theirs).
+    --home-dir bind-mounts that host directory at /home/agent (with --workspace-dir;
+    the daemon must list it, or a parent, in HOTCELL_HOME_ROOTS).
     --template restores a captured microVM snapshot (see \`hotcell template\`) in
     milliseconds instead of booting — the workspace and tooling are already in it,
     so --repo/--setup/--branch/--autopilot are rejected alongside it.

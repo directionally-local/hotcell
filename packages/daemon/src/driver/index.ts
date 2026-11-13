@@ -56,7 +56,7 @@ export function createNamedDriver(name: string, config: Config): Driver {
           reservationMb: config.defaultReservationMb,
           stateDir: join(dirname(resolve(config.dbPath)), "container-pool"),
         },
-        { workspaceRoots: config.workspaceRoots },
+        { workspaceRoots: config.workspaceRoots, homeRoots: config.homeRoots },
       );
     case "firecracker":
       return new FirecrackerDriver({

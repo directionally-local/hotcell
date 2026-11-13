@@ -283,6 +283,12 @@ export interface CreateOptions {
    * The agent, the commands it runs and plain `docker exec` all use it.
    */
   user?: string;
+  /**
+   * Container driver only, with `workspaceDir`: bind-mount this host directory (absolute
+   * path) read-write at `/home/agent`, e.g. for the agent's HOME and config outside the
+   * workspace. Accepted only under the daemon's `HOTCELL_HOME_ROOTS` (off by default).
+   */
+  homeDir?: string;
   /** Hard memory cap in MiB (overrides the daemon default; 0 = unlimited). */
   memoryMb?: number;
   /** Hard CPU cap in fractional cores, e.g. 0.5 (overrides the daemon default). */

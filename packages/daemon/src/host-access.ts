@@ -21,8 +21,12 @@ export const NETWORKS_LABEL = "hotcell.networks";
 export const ATTACHABLE_LABEL = "hotcell.attachable";
 /** The numeric `UID:GID` the container runs as (reserved label, set by the daemon). */
 export const USER_LABEL = "hotcell.user";
+/** The host directory bind-mounted at `HOME_MOUNT` (reserved label, set by the daemon). */
+export const HOME_DIR_LABEL = "hotcell.home-dir";
+/** Where a sandbox's host home directory is mounted. */
+export const HOME_MOUNT = "/home/agent";
 
-export const RESERVED_LABELS: readonly string[] = [WORKSPACE_DIR_LABEL, NETWORKS_LABEL, USER_LABEL];
+export const RESERVED_LABELS: readonly string[] = [WORKSPACE_DIR_LABEL, NETWORKS_LABEL, USER_LABEL, HOME_DIR_LABEL];
 
 /** `HOTCELL_WORKSPACE_ROOTS`: absolute directories, comma-separated; anything else is dropped. */
 export function parseWorkspaceRoots(text: string | undefined): string[] {
@@ -51,23 +55,38 @@ const within = (path: string, root: string) => path === root || path.startsWith(
  * an allowed root that points elsewhere is refused. `/` is never a workspace.
  */
 export function checkWorkspaceDir(dir: unknown, roots: readonly string[], ops: PathOps = realOps): { dir: string } | { error: string } {
-  if (typeof dir !== "string" || !dir) return { error: "workspaceDir must be a non-empty string" };
-  if (!isAbsolute(dir)) return { error: `workspaceDir must be an absolute path (got "${dir}")` };
-  if (/[,:\n]/.test(dir)) return { error: "workspaceDir must not contain ',', ':' or a newline" };
-  if (roots.length === 0) return { error: "host workspaces are off on this daemon; the operator allows directories with HOTCELL_WORKSPACE_ROOTS" };
+  return checkHostDir(dir, roots, { option: "workspaceDir", env: "HOTCELL_WORKSPACE_ROOTS", what: "host workspaces" }, ops);
+}
+
+/** The same checks for a sandbox's home directory, against `HOTCELL_HOME_ROOTS`. */
+export function checkHomeDir(dir: unknown, roots: readonly string[], ops: PathOps = realOps): { dir: string } | { error: string } {
+  return checkHostDir(dir, roots, { option: "homeDir", env: "HOTCELL_HOME_ROOTS", what: "host home directories" }, ops);
+}
+
+function checkHostDir(dir: unknown, roots: readonly string[], names: { option: string; env: string; what: string }, ops: PathOps): { dir: string } | { error: string } {
+  const { option, env } = names;
+  if (typeof dir !== "string" || !dir) return { error: `${option} must be a non-empty string` };
+  if (!isAbsolute(dir)) return { error: `${option} must be an absolute path (got "${dir}")` };
+  if (/[,:\n]/.test(dir)) return { error: `${option} must not contain ',', ':' or a newline` };
+  if (roots.length === 0) return { error: `${names.what} are off on this daemon; the operator allows directories with ${env}` };
   let real: string;
   try {
     real = ops.realpath(dir);
-    if (!ops.isDirectory(real)) return { error: `workspaceDir ${dir} is not a directory` };
+    if (!ops.isDirectory(real)) return { error: `${option} ${dir} is not a directory` };
   } catch {
-    return { error: `workspaceDir ${dir} does not exist or the daemon can't read it` };
+    return { error: `${option} ${dir} does not exist or the daemon can't read it` };
   }
-  if (real === sep) return { error: "workspaceDir must not be /" };
+  if (real === sep) return { error: `${option} must not be /` };
   const allowed = roots.some((root) => {
     try { return within(real, ops.realpath(root)); } catch { return false; }
   });
-  if (!allowed) return { error: `workspaceDir ${real} is not under HOTCELL_WORKSPACE_ROOTS (${roots.join(", ")})` };
+  if (!allowed) return { error: `${option} ${real} is not under ${env} (${roots.join(", ")})` };
   return { dir: real };
+}
+
+/** A home directory and the workspace must not contain one another (each mount shows only itself). */
+export function overlaps(a: string, b: string): boolean {
+  return within(a, b) || within(b, a);
 }
 
 /** A Docker network name, as Docker accepts them. */
@@ -106,13 +125,15 @@ export interface HostAccess {
   workspaceDir?: string;
   networks?: string[];
   user?: string;
+  homeDir?: string;
 }
 
 export function hostAccessFromLabels(labels: Record<string, string> | undefined): HostAccess {
   const workspaceDir = labels?.[WORKSPACE_DIR_LABEL];
   const networks = labels?.[NETWORKS_LABEL]?.split(",").filter(Boolean);
   const user = labels?.[USER_LABEL];
-  return { ...(workspaceDir ? { workspaceDir } : {}), ...(networks?.length ? { networks } : {}), ...(user ? { user } : {}) };
+  const homeDir = labels?.[HOME_DIR_LABEL];
+  return { ...(workspaceDir ? { workspaceDir } : {}), ...(networks?.length ? { networks } : {}), ...(user ? { user } : {}), ...(homeDir ? { homeDir } : {}) };
 }
 
 export function hostAccessLabels(access: HostAccess): Record<string, string> {
@@ -120,29 +141,32 @@ export function hostAccessLabels(access: HostAccess): Record<string, string> {
     ...(access.workspaceDir ? { [WORKSPACE_DIR_LABEL]: access.workspaceDir } : {}),
     ...(access.networks?.length ? { [NETWORKS_LABEL]: access.networks.join(",") } : {}),
     ...(access.user ? { [USER_LABEL]: access.user } : {}),
+    ...(access.homeDir ? { [HOME_DIR_LABEL]: access.homeDir } : {}),
   };
 }
 
 /**
- * The create body's `workspaceDir`, `networks` and `user`, checked against the daemon's
- * settings: container driver only, no repo clone into a host directory, no custom
- * networks under egress enforcement (which owns the sandbox's network), and a `user`
- * only with a `workspaceDir` (a named volume is root's, so that user couldn't write it).
+ * The create body's `workspaceDir`, `networks`, `user` and `homeDir`, checked against the
+ * daemon's settings: container driver only, no repo clone into a host directory, no custom
+ * networks under egress enforcement (which owns the sandbox's network), and a `user` or a
+ * `homeDir` only with a `workspaceDir` (a named volume is root's, so that user couldn't
+ * write it). A `homeDir` is mounted at /home/agent, only under `HOTCELL_HOME_ROOTS`.
  */
 export function checkHostAccess(
-  body: { workspaceDir?: unknown; networks?: unknown; user?: unknown; labels?: unknown; repo?: unknown; persist?: unknown },
-  context: { driver: string; workspaceRoots: readonly string[]; egressEnforce: boolean; template?: boolean },
+  body: { workspaceDir?: unknown; networks?: unknown; user?: unknown; homeDir?: unknown; labels?: unknown; repo?: unknown; persist?: unknown },
+  context: { driver: string; workspaceRoots: readonly string[]; homeRoots?: readonly string[]; egressEnforce: boolean; template?: boolean },
   ops: PathOps = realOps,
 ): { access: HostAccess } | { error: string } {
   const labels = body.labels && typeof body.labels === "object" ? body.labels as Record<string, unknown> : {};
   const reserved = RESERVED_LABELS.filter((label) => label in labels);
-  if (reserved.length) return { error: `labels ${reserved.join(", ")} are set by the daemon (use workspaceDir / networks / user)` };
+  if (reserved.length) return { error: `labels ${reserved.join(", ")} are set by the daemon (use workspaceDir / networks / user / homeDir)` };
   const wantsDir = body.workspaceDir !== undefined;
   const wantsNetworks = body.networks !== undefined;
   const wantsUser = body.user !== undefined;
-  if (!wantsDir && !wantsNetworks && !wantsUser) return { access: {} };
-  if (context.driver !== "container") return { error: "workspaceDir, networks and user need the container driver" };
-  if (context.template) return { error: "workspaceDir, networks and user can't be combined with a template" };
+  const wantsHome = body.homeDir !== undefined;
+  if (!wantsDir && !wantsNetworks && !wantsUser && !wantsHome) return { access: {} };
+  if (context.driver !== "container") return { error: "workspaceDir, networks, user and homeDir need the container driver" };
+  if (context.template) return { error: "workspaceDir, networks, user and homeDir can't be combined with a template" };
   const access: HostAccess = {};
   if (wantsDir) {
     if (body.repo) return { error: "workspaceDir can't be combined with repo (the clone would write into the host directory)" };
@@ -162,6 +186,13 @@ export function checkHostAccess(
     const checked = checkUser(body.user);
     if ("error" in checked) return checked;
     access.user = checked.user;
+  }
+  if (wantsHome) {
+    if (!wantsDir) return { error: "homeDir needs workspaceDir" };
+    const checked = checkHomeDir(body.homeDir, context.homeRoots ?? [], ops);
+    if ("error" in checked) return checked;
+    if (overlaps(checked.dir, access.workspaceDir!)) return { error: `homeDir ${checked.dir} and workspaceDir ${access.workspaceDir} must not contain one another` };
+    access.homeDir = checked.dir;
   }
   return { access };
 }

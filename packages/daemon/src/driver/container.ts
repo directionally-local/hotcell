@@ -22,7 +22,7 @@ import type { CreateOptions, HostInfo, ResourceLimits } from "./types.js";
 import { shellEscape } from "../util.js";
 import { redactSecrets, safeRepoForLog } from "../audit.js";
 import { log } from "../logger.js";
-import { ATTACHABLE_LABEL, checkUser, checkWorkspaceDir, hostAccessFromLabels, type HostAccess } from "../host-access.js";
+import { ATTACHABLE_LABEL, checkHomeDir, checkUser, checkWorkspaceDir, HOME_MOUNT, hostAccessFromLabels, overlaps, type HostAccess } from "../host-access.js";
 
 /**
  * Container driver — backs each sandbox with a long-lived OCI container via the
@@ -96,6 +96,8 @@ export class ContainerDriver extends AgentDriver {
   private readonly workspaceVolumes = new Map<string, string>();
   /** `HOTCELL_WORKSPACE_ROOTS`: host directories a sandbox may mount as /workspace. */
   private readonly workspaceRoots: string[];
+  /** `HOTCELL_HOME_ROOTS`: host directories a sandbox may mount as its home (/home/agent). */
+  private readonly homeRoots: string[];
   private poolTarget: number;
   private readonly poolImage: string;
   private readonly poolLimits: ResourceLimits;
@@ -113,10 +115,11 @@ export class ContainerDriver extends AgentDriver {
     egress?: EgressNetConfig,
     agent?: { baseDir?: string; binaryPath?: string; transport?: "unix" | "tcp" },
     pool?: ContainerPoolConfig,
-    hostAccess?: { workspaceRoots?: readonly string[] },
+    hostAccess?: { workspaceRoots?: readonly string[]; homeRoots?: readonly string[] },
   ) {
     super();
     this.workspaceRoots = [...(hostAccess?.workspaceRoots ?? [])];
+    this.homeRoots = [...(hostAccess?.homeRoots ?? [])];
     this.docker = docker ?? new Docker();
     this.egress = egress;
     this.agentBaseDir = agent?.baseDir ?? join(tmpdir(), `hotcell-agent-${process.getuid?.() ?? "user"}`);
@@ -919,6 +922,7 @@ export class ContainerDriver extends AgentDriver {
     }).map(([k, v]) => `${k}=${v}`);
     const binds = [
       ...(access.workspaceDir ? [`${access.workspaceDir}:/workspace`] : persist ? [`${workspaceVolume}:/workspace`] : []),
+      ...(access.homeDir ? [`${access.homeDir}:${HOME_MOUNT}`] : []),
       `${agentBinary}:/hotcell-agent:ro`,
       ...(!useTcp ? [`${socketDir}:/run/hotcell`] : []),
     ];
@@ -987,6 +991,13 @@ export class ContainerDriver extends AgentDriver {
       const checked = checkUser(access.user);
       if ("error" in checked) throw new Error(`container driver: ${checked.error}`);
       if (!access.workspaceDir) throw new Error("container driver: a sandbox user needs a host workspace directory");
+    }
+    if (access.homeDir) {
+      if (!access.workspaceDir) throw new Error("container driver: a sandbox home directory needs a host workspace directory");
+      const checked = checkHomeDir(access.homeDir, this.homeRoots);
+      if ("error" in checked) throw new Error(`container driver: ${checked.error}`);
+      if (checked.dir !== access.homeDir) throw new Error(`container driver: home ${access.homeDir} now resolves to ${checked.dir}; recreate the sandbox`);
+      if (overlaps(checked.dir, access.workspaceDir)) throw new Error("container driver: the home directory and the workspace must not contain one another");
     }
     if (access.workspaceDir) {
       const checked = checkWorkspaceDir(access.workspaceDir, this.workspaceRoots);

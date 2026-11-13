@@ -886,6 +886,9 @@
                   "user": {
                     "type": "string"
                   },
+                  "homeDir": {
+                    "type": "string"
+                  },
                   "memoryMb": {
                     "type": "number"
                   },

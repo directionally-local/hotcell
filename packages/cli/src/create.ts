@@ -9,7 +9,7 @@ import { formatError, parseLimitFlags } from "./util.js";
 
 /**
  * hotcell create [--image I] [--env K=V,…] [--sleep-after MS] [--egress] [--label K=V,…]
- *           [--setup "cmd"] [--autopilot] [--opencode] [--workspace-dir DIR] [--network N,…] [--user UID:GID]
+ *           [--setup "cmd"] [--autopilot] [--opencode] [--workspace-dir DIR] [--network N,…] [--user UID:GID] [--home-dir DIR]
  *
  * Provision a standalone, persistent sandbox and print its id (unlike `sb run`,
  * which runs a command and destroys the sandbox). `--autopilot` and `--opencode`
@@ -121,6 +121,12 @@ export async function createCommand(
     console.error("--user needs --workspace-dir (the sandbox's own /workspace volume belongs to root)");
     return 1;
   }
+  // --home-dir /var/lib/x/home: that host directory is /home/agent (HOTCELL_HOME_ROOTS).
+  const homeDir = typeof flags["home-dir"] === "string" ? flags["home-dir"] : undefined;
+  if (homeDir && !workspaceDir) {
+    console.error("--home-dir needs --workspace-dir");
+    return 1;
+  }
   if (workspaceDir && count > 1) {
     console.error("--workspace-dir mounts one directory into one sandbox; drop -n");
     return 1;
@@ -129,6 +135,7 @@ export async function createCommand(
     workspaceDir,
     networks,
     user,
+    homeDir,
     image,
     env,
     labels,
