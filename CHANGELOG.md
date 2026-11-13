@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.39](https://github.com/directionally-local/hotcell/compare/v0.1.38...v0.1.39) (2026-11-13)
+
+
+### Features
+
+* host workspace directory and custom networks for container sandboxes ([#73](https://github.com/directionally-local/hotcell/issues/73)) ([51dc460](https://github.com/directionally-local/hotcell/commit/51dc460f30476792375e497b8a816045243dbe82))
+
 ## [0.1.38](https://github.com/directionally-local/hotcell/compare/v0.1.37...v0.1.38) (2026-10-30)
 
 
