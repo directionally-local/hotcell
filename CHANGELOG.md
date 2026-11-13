@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.40](https://github.com/directionally-local/hotcell/compare/v0.1.39...v0.1.40) (2026-11-13)
+
+
+### Features
+
+* run a container sandbox as a numeric user (--user) with a host home directory (--home-dir) ([#75](https://github.com/directionally-local/hotcell/issues/75)) ([7645b4b](https://github.com/directionally-local/hotcell/commit/7645b4ba67a8f22998decbdbfce76edea61bb3e6))
+
 ## [0.1.39](https://github.com/directionally-local/hotcell/compare/v0.1.38...v0.1.39) (2026-11-13)
 
 
