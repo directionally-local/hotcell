@@ -9,7 +9,7 @@ import { formatError, parseLimitFlags } from "./util.js";
 
 /**
  * hotcell create [--image I] [--env K=V,…] [--sleep-after MS] [--egress] [--label K=V,…]
- *           [--setup "cmd"] [--autopilot] [--opencode]
+ *           [--setup "cmd"] [--autopilot] [--opencode] [--workspace-dir DIR] [--network N,…]
  *
  * Provision a standalone, persistent sandbox and print its id (unlike `sb run`,
  * which runs a command and destroys the sandbox). `--autopilot` and `--opencode`
@@ -111,7 +111,17 @@ export async function createCommand(
   // auto-named branch under `--branch`). stdout stays machine-clean: one id per
   // line, so `ids=$(hotcell create -n 5 …)` splits trivially.
   const count = Math.max(1, Math.floor(Number(flags.n ?? flags.count ?? 1)) || 1);
+  // --workspace-dir /srv/project: that host directory is /workspace (the daemon must
+  // allow it with HOTCELL_WORKSPACE_ROOTS). --network a,b: join those networks.
+  const workspaceDir = typeof flags["workspace-dir"] === "string" ? flags["workspace-dir"] : undefined;
+  const networks = typeof flags.network === "string" ? flags.network.split(",").map((n) => n.trim()).filter(Boolean) : undefined;
+  if (workspaceDir && count > 1) {
+    console.error("--workspace-dir mounts one directory into one sandbox; drop -n");
+    return 1;
+  }
   const options = {
+    workspaceDir,
+    networks,
     image,
     env,
     labels,

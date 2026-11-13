@@ -29,6 +29,7 @@ import {
   shellEscape,
 } from "../util.js";
 import { DASHBOARD_HTML } from "../web/dashboard.js";
+import { checkHostAccess, hostAccessLabels } from "../host-access.js";
 import type {
   CodeContextInfo,
   CodeResult,
@@ -1090,7 +1091,16 @@ async function createSandbox(
       error: `unknown driver "${driverName}" (expected: ${DRIVER_NAMES.join(" | ")})`,
     });
   }
-  const labels = (body.labels as Record<string, string>) ?? {};
+  // Opt-in host access (container driver): one host directory as /workspace and
+  // the Docker networks to join. Checked here and again by the driver at launch.
+  const hostAccess = checkHostAccess(body, {
+    driver: driverName,
+    workspaceRoots: config.workspaceRoots,
+    egressEnforce: config.egressEnforce,
+    template: !!template,
+  });
+  if ("error" in hostAccess) return sendJson(res, 400, { error: hostAccess.error });
+  const labels = { ...((body.labels as Record<string, string>) ?? {}), ...hostAccessLabels(hostAccess.access) };
   const persist = body.persist !== false;
   const sleepAfterMs =
     typeof body.sleepAfter === "number" ? body.sleepAfter : config.defaultSleepAfterMs;

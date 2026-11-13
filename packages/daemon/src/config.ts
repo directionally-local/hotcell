@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProviderKeyMap } from "./keystore.js";
+import { parseWorkspaceRoots } from "./host-access.js";
 import { restrictMode } from "./util.js";
 
 // Build-time artifacts (the VZ helper binary, guest kernels, rootfs images) live
@@ -164,6 +165,12 @@ export interface Config {
   egressEnforce: boolean;
   /** Docker network name sandboxes join when egress is enforced. `HOTCELL_EGRESS_NETWORK`. */
   egressNetwork: string;
+  /**
+   * Host directories a container sandbox may use as its `/workspace` (a bind mount,
+   * create option `workspaceDir`): the directories themselves and anything below.
+   * Empty (the default) = off. `HOTCELL_WORKSPACE_ROOTS`, comma-separated absolute paths.
+   */
+  workspaceRoots: string[];
   /**
    * IPv4 subnet (CIDR) for the egress-enforced bridge network. The host firewall
    * scopes its allow/deny rules to this subnet, and the bridge gateway (`.1`) is the
@@ -385,6 +392,7 @@ export function loadConfig(): Config {
     egressAdvertiseHost: env("EGRESS_ADVERTISE_HOST") ?? "host.docker.internal",
     egressEnforce: env("EGRESS_ENFORCE") === "true",
     egressNetwork: env("EGRESS_NETWORK") ?? "hotcell-egress",
+    workspaceRoots: parseWorkspaceRoots(env("WORKSPACE_ROOTS")),
     egressSubnet: env("EGRESS_SUBNET") ?? "10.200.0.0/24",
     egressDnsResolver: env("EGRESS_DNS") ?? "",
     allowlistFile: env("ALLOWLIST_FILE") ?? "",

@@ -874,6 +874,15 @@
                   "cpuset": {
                     "type": "string"
                   },
+                  "workspaceDir": {
+                    "type": "string"
+                  },
+                  "networks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "memoryMb": {
                     "type": "number"
                   },

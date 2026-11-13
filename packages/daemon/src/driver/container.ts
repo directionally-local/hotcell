@@ -22,6 +22,7 @@ import type { CreateOptions, HostInfo, ResourceLimits } from "./types.js";
 import { shellEscape } from "../util.js";
 import { redactSecrets, safeRepoForLog } from "../audit.js";
 import { log } from "../logger.js";
+import { ATTACHABLE_LABEL, checkWorkspaceDir, hostAccessFromLabels, type HostAccess } from "../host-access.js";
 
 /**
  * Container driver — backs each sandbox with a long-lived OCI container via the
@@ -93,6 +94,8 @@ export class ContainerDriver extends AgentDriver {
   private readonly agentTcpEndpoints = new Map<string, TcpAgentEndpoint>();
   private readonly agentSocketDirs = new Map<string, string>();
   private readonly workspaceVolumes = new Map<string, string>();
+  /** `HOTCELL_WORKSPACE_ROOTS`: host directories a sandbox may mount as /workspace. */
+  private readonly workspaceRoots: string[];
   private poolTarget: number;
   private readonly poolImage: string;
   private readonly poolLimits: ResourceLimits;
@@ -110,8 +113,10 @@ export class ContainerDriver extends AgentDriver {
     egress?: EgressNetConfig,
     agent?: { baseDir?: string; binaryPath?: string; transport?: "unix" | "tcp" },
     pool?: ContainerPoolConfig,
+    hostAccess?: { workspaceRoots?: readonly string[] },
   ) {
     super();
+    this.workspaceRoots = [...(hostAccess?.workspaceRoots ?? [])];
     this.docker = docker ?? new Docker();
     this.egress = egress;
     this.agentBaseDir = agent?.baseDir ?? join(tmpdir(), `hotcell-agent-${process.getuid?.() ?? "user"}`);
@@ -867,8 +872,11 @@ export class ContainerDriver extends AgentDriver {
     const persist = opts.persist ?? true;
     const useTcp = this.agentTransport === "tcp";
     const token = useTcp ? randomBytes(32).toString("hex") : undefined;
+    // A host workspace or custom networks (create options, kept as reserved labels)
+    // are re-checked on every launch against the daemon's current settings.
+    const access = await this.checkedHostAccess(opts);
     const workspaceVolume = this.workspaceVolumeFor(opts.id) ?? this.volumeName(opts.id);
-    if (persist) await this.ensureVolume(opts.id, workspaceVolume, mode.poolSlot);
+    if (persist && !access.workspaceDir) await this.ensureVolume(opts.id, workspaceVolume, mode.poolSlot);
     // Under egress enforcement, put every spare and adopted sandbox on the same
     // policy network and pin its DNS resolver before any user code can run.
     const enforced = this.egress?.enforce === true;
@@ -892,7 +900,7 @@ export class ContainerDriver extends AgentDriver {
       ...(token ? { HOTCELL_AGENT_TOKEN: token } : {}),
     }).map(([k, v]) => `${k}=${v}`);
     const binds = [
-      ...(persist ? [`${workspaceVolume}:/workspace`] : []),
+      ...(access.workspaceDir ? [`${access.workspaceDir}:/workspace`] : persist ? [`${workspaceVolume}:/workspace`] : []),
       `${agentBinary}:/hotcell-agent:ro`,
       ...(!useTcp ? [`${socketDir}:/run/hotcell`] : []),
     ];
@@ -922,11 +930,16 @@ export class ContainerDriver extends AgentDriver {
             : {}),
           ...(enforced ? { NetworkMode: this.egress!.network } : {}),
           ...(enforced && this.egress!.dns ? { Dns: [this.egress!.dns] } : {}),
-          ExtraHosts: ["host.docker.internal:host-gateway"],
+          // Custom networks replace the default bridge, and the host isn't advertised:
+          // such a sandbox reaches what its networks reach, nothing more.
+          ...(access.networks ? { NetworkMode: access.networks[0] } : { ExtraHosts: ["host.docker.internal:host-gateway"] }),
           ...resourceHostConfig(opts.limits),
         },
       });
       created = true;
+      for (const network of access.networks?.slice(1) ?? []) {
+        await this.docker.getNetwork(network).connect({ Container: this.containerName(opts.id) });
+      }
       await container.start();
       if (useTcp) await this.captureAgentTcpEndpoint(opts.id, container, token!);
       await this.waitForAgent(opts.id);
@@ -939,6 +952,35 @@ export class ContainerDriver extends AgentDriver {
       }
       throw err;
     }
+  }
+
+  /**
+   * The sandbox's host directory and networks, from its reserved labels, checked
+   * again now: the directory must still resolve under HOTCELL_WORKSPACE_ROOTS and
+   * each network must exist with `hotcell.attachable=true`. Under egress
+   * enforcement custom networks are refused (enforcement owns the network).
+   */
+  private async checkedHostAccess(opts: CreateOptions): Promise<HostAccess> {
+    const access = hostAccessFromLabels(opts.labels);
+    if (access.workspaceDir) {
+      const checked = checkWorkspaceDir(access.workspaceDir, this.workspaceRoots);
+      if ("error" in checked) throw new Error(`container driver: ${checked.error}`);
+      if (checked.dir !== access.workspaceDir) throw new Error(`container driver: workspace ${access.workspaceDir} now resolves to ${checked.dir}; recreate the sandbox`);
+    }
+    if (access.networks) {
+      if (this.egress?.enforce) throw new Error("container driver: custom networks can't be used under egress enforcement");
+      for (const network of access.networks) {
+        let labels: Record<string, string> | undefined;
+        try {
+          labels = ((await this.docker.getNetwork(network).inspect()) as { Labels?: Record<string, string> }).Labels;
+        } catch (err: unknown) {
+          if (isNotFound(err)) throw new Error(`container driver: network ${network} does not exist`);
+          throw err;
+        }
+        if (labels?.[ATTACHABLE_LABEL] !== "true") throw new Error(`container driver: network ${network} is not labelled ${ATTACHABLE_LABEL}=true`);
+      }
+    }
+    return access;
   }
 
   async destroy(id: string): Promise<void> {
