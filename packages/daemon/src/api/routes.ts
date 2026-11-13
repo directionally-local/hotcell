@@ -428,6 +428,7 @@ export const ROUTES: readonly RouteDef[] = [
         cpuset: string,
         workspaceDir: string,
         networks: { type: "array", items: string },
+        user: string,
         memoryMb: number,
         cpus: number,
         pidsLimit: number,

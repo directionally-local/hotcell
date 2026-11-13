@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -8,6 +8,7 @@ import { ContainerDriver } from "../src/driver/container.js";
 import {
   checkHostAccess,
   checkNetworks,
+  checkUser,
   checkWorkspaceDir,
   hostAccessFromLabels,
   hostAccessLabels,
@@ -71,6 +72,20 @@ describe("checkNetworks", () => {
   });
 });
 
+describe("checkUser", () => {
+  it("takes a numeric UID:GID, root included", () => {
+    assert.deepEqual(checkUser("1000:1000"), { user: "1000:1000" });
+    assert.deepEqual(checkUser("0:0"), { user: "0:0" });
+    assert.deepEqual(checkUser("0001:02"), { user: "1:2" });
+  });
+
+  it("refuses names, a missing group, extra fields and out-of-range ids", () => {
+    for (const bad of ["root", "1000", "1000:", ":1000", "ubuntu:ubuntu", "1000:1000:1", "-1:0", " 1000:1000", "4294967295:0", 1000, undefined]) {
+      assert.ok("error" in checkUser(bad), String(bad));
+    }
+  });
+});
+
 describe("checkHostAccess (the create body)", () => {
   const context = { driver: "container", workspaceRoots: [root], egressEnforce: false };
 
@@ -85,6 +100,18 @@ describe("checkHostAccess (the create body)", () => {
   it("refuses the reserved labels from a caller", () => {
     const result = checkHostAccess({ labels: { "hotcell.workspace-dir": "/" } }, context);
     assert.match((result as { error: string }).error, /set by the daemon/);
+    assert.match((checkHostAccess({ labels: { "hotcell.user": "0:0" } }, context) as { error: string }).error, /set by the daemon/);
+  });
+
+  it("keeps a user with a host workspace, and refuses one without", () => {
+    const result = checkHostAccess({ workspaceDir: project, user: "1000:1000" }, context);
+    assert.ok("access" in result);
+    const labels = hostAccessLabels(result.access);
+    assert.deepEqual(labels, { "hotcell.workspace-dir": project, "hotcell.user": "1000:1000" });
+    assert.deepEqual(hostAccessFromLabels(labels), { workspaceDir: project, user: "1000:1000" });
+    assert.match((checkHostAccess({ user: "1000:1000" }, context) as { error: string }).error, /needs workspaceDir/);
+    assert.match((checkHostAccess({ workspaceDir: project, user: "ubuntu" }, context) as { error: string }).error, /numeric UID:GID/);
+    assert.match((checkHostAccess({ workspaceDir: project, user: "1000:1000" }, { ...context, driver: "firecracker" }) as { error: string }).error, /container driver/);
   });
 
   it("is container-only, never with a repo clone, a template or egress enforcement", () => {
@@ -171,6 +198,23 @@ describe("ContainerDriver with a host workspace and custom networks", () => {
     assert.equal(fake.created.length, 0, "nothing was created");
   });
 
+  it("runs a sandbox with a user as that user, and lets it create its agent socket", async () => {
+    const fake = fakeDocker({});
+    chmodSync(join(base, "agent"), 0o755);
+    await driverWith(fake.docker, [root]).create({ id: "u1", image: "cell:1", labels: { "hotcell.workspace-dir": project, "hotcell.user": "1000:1000" } });
+    const config = fake.created[0] as { User?: string };
+    assert.equal(config.User, "1000:1000");
+    assert.equal(statSync(join(base, "agent", "u1")).mode & 0o777, 0o733, "the user can create the socket, not list the directory");
+    assert.equal(statSync(join(base, "agent")).mode & 0o777, 0o700, "the base directory stays the daemon's alone");
+  });
+
+  it("refuses at launch a user label that isn't numeric or comes without a workspace", async () => {
+    const fake = fakeDocker({});
+    await assert.rejects(driverWith(fake.docker, [root]).create({ id: "u2", image: "cell:1", labels: { "hotcell.workspace-dir": project, "hotcell.user": "root" } }), /numeric UID:GID/);
+    await assert.rejects(driverWith(fake.docker, [root]).create({ id: "u3", image: "cell:1", labels: { "hotcell.user": "1000:1000" } }), /needs a host workspace/);
+    assert.equal(fake.created.length, 0, "nothing was created");
+  });
+
   it("leaves an ordinary sandbox as before: a named volume and the host gateway", async () => {
     const fake = fakeDocker({});
     await driverWith(fake.docker, [root]).create({ id: "c1", image: "cell:1" });
@@ -179,5 +223,7 @@ describe("ContainerDriver with a host workspace and custom networks", () => {
     assert.equal(config.HostConfig.NetworkMode, undefined);
     assert.deepEqual(config.HostConfig.ExtraHosts, ["host.docker.internal:host-gateway"]);
     assert.deepEqual(fake.volumes, ["sbx-c1-workspace"]);
+    assert.equal((config as { User?: string }).User, undefined, "the image's user, as before");
+    assert.equal(statSync(join(base, "agent", "c1")).mode & 0o777, 0o700);
   });
 });

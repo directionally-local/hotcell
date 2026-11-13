@@ -9,7 +9,7 @@ import { formatError, parseLimitFlags } from "./util.js";
 
 /**
  * hotcell create [--image I] [--env K=V,…] [--sleep-after MS] [--egress] [--label K=V,…]
- *           [--setup "cmd"] [--autopilot] [--opencode] [--workspace-dir DIR] [--network N,…]
+ *           [--setup "cmd"] [--autopilot] [--opencode] [--workspace-dir DIR] [--network N,…] [--user UID:GID]
  *
  * Provision a standalone, persistent sandbox and print its id (unlike `sb run`,
  * which runs a command and destroys the sandbox). `--autopilot` and `--opencode`
@@ -115,6 +115,12 @@ export async function createCommand(
   // allow it with HOTCELL_WORKSPACE_ROOTS). --network a,b: join those networks.
   const workspaceDir = typeof flags["workspace-dir"] === "string" ? flags["workspace-dir"] : undefined;
   const networks = typeof flags.network === "string" ? flags.network.split(",").map((n) => n.trim()).filter(Boolean) : undefined;
+  // --user 1000:1000: the sandbox runs as that numeric uid:gid (needs --workspace-dir).
+  const user = typeof flags.user === "string" ? flags.user : undefined;
+  if (user && !workspaceDir) {
+    console.error("--user needs --workspace-dir (the sandbox's own /workspace volume belongs to root)");
+    return 1;
+  }
   if (workspaceDir && count > 1) {
     console.error("--workspace-dir mounts one directory into one sandbox; drop -n");
     return 1;
@@ -122,6 +128,7 @@ export async function createCommand(
   const options = {
     workspaceDir,
     networks,
+    user,
     image,
     env,
     labels,

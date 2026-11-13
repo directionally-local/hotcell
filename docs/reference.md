@@ -35,6 +35,7 @@ hotcell create [-i] [-n N] [--name HANDLE] [--image I] [--driver container|firec
                                              # shows live per-sandbox progress; Ctrl-C leaves provisioning running (see hotcell ls)
 hotcell create --workspace-dir DIR [--network NET[,NET…]]   # container driver: DIR (under HOTCELL_WORKSPACE_ROOTS) is /workspace;
                                              # NETs (labelled hotcell.attachable=true) replace the default bridge
+hotcell create --workspace-dir DIR --user UID:GID   # container driver: run as that numeric uid:gid (e.g. DIR's owner)
 hotcell exec <id> "<cmd>" [--session SID] [--cwd DIR] [--env K=V,…]
 hotcell ls | stats <id> | stop <id> | start <id> | rm <id> | capacity | info
 hotcell terminal <id>                        # interactive shell inside a sandbox (attach)

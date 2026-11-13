@@ -277,6 +277,12 @@ export interface CreateOptions {
    * `hotcell.attachable=true`; refused under egress enforcement.
    */
   networks?: string[];
+  /**
+   * Container driver only, with `workspaceDir`: run the sandbox as this numeric
+   * `UID:GID` (e.g. the owner of `workspaceDir`, so files it writes are theirs).
+   * The agent, the commands it runs and plain `docker exec` all use it.
+   */
+  user?: string;
   /** Hard memory cap in MiB (overrides the daemon default; 0 = unlimited). */
   memoryMb?: number;
   /** Hard CPU cap in fractional cores, e.g. 0.5 (overrides the daemon default). */

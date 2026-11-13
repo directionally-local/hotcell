@@ -22,7 +22,7 @@ import type { CreateOptions, HostInfo, ResourceLimits } from "./types.js";
 import { shellEscape } from "../util.js";
 import { redactSecrets, safeRepoForLog } from "../audit.js";
 import { log } from "../logger.js";
-import { ATTACHABLE_LABEL, checkWorkspaceDir, hostAccessFromLabels, type HostAccess } from "../host-access.js";
+import { ATTACHABLE_LABEL, checkUser, checkWorkspaceDir, hostAccessFromLabels, type HostAccess } from "../host-access.js";
 
 /**
  * Container driver — backs each sandbox with a long-lived OCI container via the
@@ -194,6 +194,16 @@ export class ContainerDriver extends AgentDriver {
     const endpoint = { host: "127.0.0.1", port, token };
     this.agentTcpEndpoints.set(id, endpoint);
     return endpoint;
+  }
+
+  /** The agent base directory is the daemon's and closed to everyone else (0700). */
+  private ensurePrivateBaseDir(): void {
+    const stat = statSync(this.agentBaseDir);
+    const uid = process.getuid?.();
+    if (uid !== undefined && stat.uid !== uid) {
+      throw new Error(`container driver: agent directory ${this.agentBaseDir} isn't owned by the daemon; a sandbox user needs it private`);
+    }
+    if ((stat.mode & 0o077) !== 0) chmodSync(this.agentBaseDir, 0o700);
   }
 
   private agentSocketDir(id: string): string {
@@ -886,6 +896,14 @@ export class ContainerDriver extends AgentDriver {
     if (!useTcp) {
       mkdirSync(socketDir, { recursive: true, mode: 0o700 });
       chmodSync(socketDir, 0o700);
+      // A sandbox with its own user runs the agent as that user, who must be able to
+      // create the socket here (root in the container needs no permission). Others may
+      // write but not list (0733); the base directory stays 0700 and the daemon's, so no
+      // other host user can reach it.
+      if (access.user) {
+        this.ensurePrivateBaseDir();
+        chmodSync(socketDir, 0o733);
+      }
       this.agentSocketDirs.set(opts.id, socketDir);
       if (Buffer.byteLength(this.agentSocketPath(opts.id)) > 100) {
         this.cleanupAgentSocket(opts.id);
@@ -917,6 +935,9 @@ export class ContainerDriver extends AgentDriver {
         Env: env,
         Labels: labels,
         WorkingDir: "/workspace",
+        // `user` (numeric UID:GID): the agent, and so every command it runs, and plain
+        // `docker exec` all run as that user instead of the image's.
+        ...(access.user ? { User: access.user } : {}),
         ...(useTcp ? { ExposedPorts: { [`${AGENT_TCP_PORT}/tcp`]: {} } } : {}),
         HostConfig: {
           AutoRemove: false,
@@ -962,6 +983,11 @@ export class ContainerDriver extends AgentDriver {
    */
   private async checkedHostAccess(opts: CreateOptions): Promise<HostAccess> {
     const access = hostAccessFromLabels(opts.labels);
+    if (access.user) {
+      const checked = checkUser(access.user);
+      if ("error" in checked) throw new Error(`container driver: ${checked.error}`);
+      if (!access.workspaceDir) throw new Error("container driver: a sandbox user needs a host workspace directory");
+    }
     if (access.workspaceDir) {
       const checked = checkWorkspaceDir(access.workspaceDir, this.workspaceRoots);
       if ("error" in checked) throw new Error(`container driver: ${checked.error}`);
