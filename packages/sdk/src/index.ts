@@ -263,6 +263,20 @@ export interface CreateOptions {
    * egress only over the gateway.
    */
   networked?: boolean;
+  /**
+   * Container driver only: bind-mount this host directory (absolute path) as the
+   * sandbox's `/workspace` instead of a named volume. The daemon accepts it only
+   * under one of its `HOTCELL_WORKSPACE_ROOTS` (off by default), and it can't be
+   * combined with `repo`. Destroying the sandbox never deletes the directory.
+   */
+  workspaceDir?: string;
+  /**
+   * Container driver only: the Docker networks the sandbox joins instead of the
+   * default bridge (the first is its network mode, the rest are connected before
+   * it starts). Each must be a user-defined network labelled
+   * `hotcell.attachable=true`; refused under egress enforcement.
+   */
+  networks?: string[];
   /** Hard memory cap in MiB (overrides the daemon default; 0 = unlimited). */
   memoryMb?: number;
   /** Hard CPU cap in fractional cores, e.g. 0.5 (overrides the daemon default). */
