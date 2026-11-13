@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -14,7 +14,8 @@ import {
   parseWorkspaceRoots,
 } from "../src/host-access.js";
 
-const base = mkdtempSync(join(tmpdir(), "hotcell-host-access-"));
+// Real path: macOS temp dirs sit behind the /var → /private/var symlink.
+const base = realpathSync(mkdtempSync(join(tmpdir(), "hotcell-host-access-")));
 const root = join(base, "srv");
 const project = join(root, "project");
 const outside = join(base, "etc");
